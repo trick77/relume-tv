@@ -30,6 +30,20 @@ func TestRenderWithProfile_hassUsesHomeAssistantManufacturerFields(t *testing.T)
 	}
 }
 
+func TestServerHeader_usesProfileSpecificSignatures(t *testing.T) {
+	tests := map[string]string{
+		"":          ServerHeaderDefault,
+		"ambilight": ServerHeaderAmbilight,
+		"hass":      ServerHeaderHass,
+		"unknown":   ServerHeaderDefault,
+	}
+	for profile, want := range tests {
+		if got := ServerHeader(profile); got != want {
+			t.Errorf("ServerHeader(%q) = %q, expected %q", profile, got, want)
+		}
+	}
+}
+
 func TestRenderWithProfile_ambilightUsesSignifyManufacturerFields(t *testing.T) {
 	// Given
 	id := config.Identity{Serial: "2c4d54ea2832"}

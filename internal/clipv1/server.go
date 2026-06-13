@@ -158,15 +158,22 @@ func (s *Server) linkActive() bool {
 }
 
 func (s *Server) handleDescription(w http.ResponseWriter, r *http.Request) {
+	mediaServerAlias := s.MediaServerAlias && r.URL.Query().Get("relume") == "ms1"
 	xml, err := upnp.RenderWithOptions(s.cfg.Identity, s.advIP, s.httpPort, upnp.Options{
 		Profile:          s.IdentityProfile,
-		MediaServerAlias: s.MediaServerAlias && r.URL.Query().Get("relume") == "ms1",
+		MediaServerAlias: mediaServerAlias,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/xml")
+	w.Header().Set("Server", upnp.ServerHeader(s.IdentityProfile))
+	if mediaServerAlias {
+		w.Header().Set("Cache-Control", "max-age=1")
+	} else {
+		w.Header().Set("Cache-Control", "max-age=100")
+	}
 	io.WriteString(w, xml)
 }
 
