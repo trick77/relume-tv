@@ -24,6 +24,9 @@ import (
 	"github.com/trick77/relume/internal/ssdp"
 )
 
+// version wird beim Build per -ldflags "-X main.version=..." gesetzt (CI).
+var version = "dev"
+
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -33,6 +36,9 @@ func main() {
 	}
 
 	switch cmd {
+	case "version", "-version", "--version":
+		fmt.Println("relume", version)
+		return
 	case "serve":
 		if err := runServe(os.Args[2:], log); err != nil {
 			log.Error("serve beendet", "err", err)
@@ -84,6 +90,7 @@ func runServe(args []string, log *slog.Logger) error {
 			return fmt.Errorf("advertise-ip auto-detektieren: %w (nutze -advertise-ip)", err)
 		}
 	}
+	log.Info("relume", "version", version)
 	log.Info("identität", "serial", cfg.Identity.Serial, "bridgeid", cfg.Identity.BridgeID(), "advertise", ip)
 
 	clip := clipv1.New(cfg, ip, *httpPort, log)
