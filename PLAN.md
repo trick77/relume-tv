@@ -71,16 +71,36 @@ als HueStream-v2 an die Pro gestreamt. Stream-Stop → deaktivieren.
   Reale Lampe über den Proxy geschaltet. **Offen:** Gruppen-Pfad (`groups/{id}/action`,
   Gruppen-Listing) ist noch ein geloggter Stub — wird mit M4 anhand des realen TV-Verhaltens
   vervollständigt.
+- **Discovery (mDNS)** ✅ **implementiert** (`internal/mdns`, aktiver `_hue._tcp`-Announce
+  als `Philips Hue - XXXXXX`/BSB002) + `avahi-service`-Befehl für avahi-Hosts. **Befund am
+  realen TV (siehe unten).** Verifizierung der TV-Erkennung steht noch aus (auf Linux-Ziel).
 - **M4 — Entertainment** ⏳ offen. `huestream` (+Tests), DTLS-Server (TV) + DTLS-Client (Pro),
   Entertainment-Config-Aktivierung, Stream-Forwarding. *Ziel:* flüssiges Ambilight.
-- **M5 — Packaging** ⏳ offen. Dockerfile + `--network=host`-Doku, Persistenz, Web-UI, README.
+- **M5 — Packaging** ✅ **FERTIG.** Dockerfile (statisch, multi-stage), `docker-compose.yml`
+  (`network_mode: host`), Persistenz unter `./data`, README mit Deployment + Caveats.
+  Docker-Image baut.
+
+## Discovery-Befund (am realen Philips-TV gemessen)
+
+- Der TV (IP .112) sendet SSDP-M-SEARCH **nur** für `MediaServer` (DLNA) — **nie** etwas
+  Hue-bezogenes, nie `/description.xml`/`/api`. **→ Der TV nutzt für die Hue-Suche kein SSDP.**
+- Die echte Bridge Pro **announct selbst mDNS** `_hue._tcp` als `Hue Bridge - XXXXXX`,
+  `modelid=BSB003`. relume announct `Philips Hue - XXXXXX`, `modelid=BSB002` (Format von
+  hass-emulated-hue, das vom TV gefunden wird; diyHue-Name wird NICHT gefunden — #988).
+- **macOS-Testumgebung untauglich:** System-`mDNSResponder` belegt Port 5353 → relumes
+  Go-zeroconf-Announce greift dort nicht (Workaround im Test: `dns-sd -R` über System-Bonjour).
+  Auf single-homed Linux ohne/mit konfiguriertem avahi sauber → finaler TV-Test dort.
+- Mögliche Cloud-Suppression: `relume discover` lieferte die echte Bridge aus der Philips-Cloud.
+  Falls der TV trotz korrektem mDNS nichts findet → `discovery.meethue.com` per DNS umbiegen.
 
 ## Offene Punkte (am echten Gerät verifizieren)
 
+- **TV-Erkennung von relume per mDNS auf dem Linux-Ziel** (entscheidender offener Test).
 - Exaktes `HueStream`-v2-Layout (52-Byte-Header, Channel-Chunks).
 - Genaue CLIP-v2-Calls zum Anlegen/Aktivieren der `entertainment_configuration` auf der Pro.
 - Ob der TV ein bestimmtes `swversion`/`apiversion` braucht, um Entertainment zu versuchen.
-- Exakter `devicetype`-String, den der TV bei `POST /api` schickt (Logging beim ersten Pairing).
+- Exakter `devicetype`-String, den der TV bei `POST /api` schickt; ob der TV den per mDNS
+  beworbenen Port nutzt oder 80 hartcodiert.
 
 ## Aktueller Stand (M1)
 

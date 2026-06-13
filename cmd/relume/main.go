@@ -53,8 +53,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	case "avahi-service":
+		if err := runAvahiService(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	default:
-		fmt.Fprintf(os.Stderr, "unbekannter Befehl %q\nVerfügbar: serve, setup, discover, link\n", cmd)
+		fmt.Fprintf(os.Stderr, "unbekannter Befehl %q\nVerfügbar: serve, setup, discover, link, avahi-service\n", cmd)
 		os.Exit(2)
 	}
 }
@@ -183,6 +188,37 @@ func runDiscover() error {
 	for _, b := range bridges {
 		fmt.Printf("  id=%s  ip=%s\n", b.ID, b.InternalIPAddress)
 	}
+	return nil
+}
+
+// runAvahiService gibt eine Avahi-Static-Service-Datei aus, mit der ein Linux-Host
+// mit laufendem avahi-daemon den _hue._tcp-Dienst announct. Nötig, wenn avahi
+// Port 5353 belegt und relumes eingebauter mDNS-Announcer deshalb nicht greift:
+//   relume avahi-service > /etc/avahi/services/relume-hue.service
+func runAvahiService(args []string) error {
+	fs := flag.NewFlagSet("avahi-service", flag.ExitOnError)
+	cfgPath := fs.String("config", "relume.json", "Pfad zur Konfigurationsdatei")
+	port := fs.Int("http-port", 80, "beworbener Port (muss zum serve-http-port passen)")
+	_ = fs.Parse(args)
+
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		return err
+	}
+	bridgeID := cfg.Identity.BridgeID()
+	instance := "Philips Hue - " + bridgeID[len(bridgeID)-6:]
+	fmt.Printf(`<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name>%s</name>
+  <service>
+    <type>_hue._tcp</type>
+    <port>%d</port>
+    <txt-record>bridgeid=%s</txt-record>
+    <txt-record>modelid=BSB002</txt-record>
+  </service>
+</service-group>
+`, instance, *port, bridgeID)
 	return nil
 }
 
