@@ -23,11 +23,14 @@ import (
 // Pairing akzeptiert wird — wie an einer echten Bridge.
 const linkWindow = 30 * time.Second
 
-// LightProvider liefert die (bereits nach v1 übersetzte) Lampenliste der Bridge Pro.
-// Wird vom Backend (M2+) gesetzt; ist es nil, liefert der Server leere Listen (M1).
+// LightProvider liefert die (bereits nach v1 übersetzte) Lampenliste der Bridge Pro
+// und setzt Lampenzustände (REST-Fallback). Wird vom Backend (M2+) gesetzt; ist es
+// nil, liefert der Server leere Listen (M1).
 type LightProvider interface {
 	// LightsV1 liefert die v1-Lampenliste (key = numerische ID als String).
 	LightsV1() (map[string]any, error)
+	// SetLightV1 setzt den Zustand einer Lampe anhand ihrer v1-ID.
+	SetLightV1(v1id string, v1state map[string]any) error
 }
 
 // Server bedient die CLIP-v1-Oberfläche.
@@ -63,11 +66,22 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/{user}/config", s.handleConfig)
 	mux.HandleFunc("GET /api/{user}", s.handleDatastore)
 	mux.HandleFunc("GET /api/{user}/lights", s.handleLights)
+	mux.HandleFunc("PUT /api/{user}/lights/{id}/state", s.handleSetLightState)
 	mux.HandleFunc("GET /api/{user}/groups", s.handleGroups)
+	mux.HandleFunc("PUT /api/{user}/groups/{id}/action", s.handleGroupAction)
+	mux.HandleFunc("PUT /api/{user}/groups/{id}", s.handleGroupUpdate)
 	// Virtueller Link-Button (Web-UI / CLI öffnen das Pairing-Fenster).
 	mux.HandleFunc("GET /", s.handleIndex)
 	mux.HandleFunc("POST /link", s.handleLink)
-	return mux
+	return logRequests(s.log, mux)
+}
+
+// logRequests protokolliert jede Anfrage (wichtig, um das reale TV-Verhalten zu beobachten).
+func logRequests(log *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Info("http", "method", r.Method, "path", r.URL.Path, "from", r.RemoteAddr)
+		next.ServeHTTP(w, r)
+	})
 }
 
 // PressLink öffnet das Pairing-Fenster (vom CLI-Befehl `link` oder der Web-UI genutzt).
@@ -206,11 +220,67 @@ func (s *Server) handleLights(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, lights)
 }
 
+// handleSetLightState verarbeitet den REST-Steuerungspfad: v1-State entgegennehmen,
+// nach v2 übersetzen und an die Bridge Pro weiterreichen.
+func (s *Server) handleSetLightState(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	var state map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&state); err != nil {
+		writeError(w, 2, "/lights/"+id+"/state", "invalid json")
+		return
+	}
+	if s.lights == nil {
+		writeError(w, 3, "/lights/"+id, "no bridge pro paired")
+		return
+	}
+	if err := s.lights.SetLightV1(id, state); err != nil {
+		s.log.Warn("lampe setzen", "id", id, "err", err)
+		writeError(w, 901, "/lights/"+id+"/state", "bridge pro error")
+		return
+	}
+	// v1-Erfolgsantwort: ein success-Eintrag pro gesetztem Feld.
+	resp := make([]map[string]any, 0, len(state))
+	for k, v := range state {
+		resp = append(resp, map[string]any{"success": map[string]any{
+			"/lights/" + id + "/state/" + k: v,
+		}})
+	}
+	writeJSON(w, resp)
+}
+
 func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(w, r) {
 		return
 	}
 	writeJSON(w, map[string]any{})
+}
+
+// handleGroupAction ist der Gruppen-REST-Pfad. Vollständige Gruppen-/Entertainment-
+// Unterstützung folgt in M4; vorerst wird die Anfrage geloggt und bestätigt, damit
+// der TV nicht abbricht.
+func (s *Server) handleGroupAction(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	body, _ := io.ReadAll(r.Body)
+	s.log.Info("group action (noch nicht weitergereicht)", "group", id, "body", string(body))
+	writeJSON(w, []map[string]any{{"success": map[string]any{"/groups/" + id + "/action": "ok"}}})
+}
+
+// handleGroupUpdate fängt u.a. die Stream-Aktivierung ab (PUT /groups/{id} mit
+// {"stream":{"active":true}}) — der Einstieg in den Entertainment-Pfad (M4).
+func (s *Server) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	body, _ := io.ReadAll(r.Body)
+	s.log.Info("group update", "group", id, "body", string(body))
+	writeJSON(w, []map[string]any{{"success": map[string]any{"/groups/" + id: "ok"}}})
 }
 
 // authorized prüft, ob der {user} aus dem Pfad ein gekoppelter Client ist.

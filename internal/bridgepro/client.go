@@ -152,7 +152,9 @@ func (c *Client) get(path string, v any) error {
 	return json.NewDecoder(resp.Body).Decode(v)
 }
 
-// put führt einen authentifizierten CLIP-v2-PUT aus (für REST-Steuerung).
+// put führt einen authentifizierten CLIP-v2-PUT aus (für REST-Steuerung). Die
+// Bridge Pro antwortet mit 200 (ok) oder 207 (Multi-Status) und trägt fachliche
+// Fehler im "errors"-Array; HTTP-Statusfehler (>=400) bleiben harte Fehler.
 func (c *Client) put(path string, payload any) error {
 	body, _ := json.Marshal(payload)
 	req, _ := http.NewRequest(http.MethodPut, "https://"+c.host+path, bytes.NewReader(body))
@@ -163,9 +165,18 @@ func (c *Client) put(path string, payload any) error {
 		return fmt.Errorf("PUT %s: %w", path, err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("PUT %s: status %d: %s", path, resp.StatusCode, string(b))
+	raw, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("PUT %s: status %d: %s", path, resp.StatusCode, string(raw))
+	}
+	var out struct {
+		Errors []struct {
+			Description string `json:"description"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(raw, &out); err == nil && len(out.Errors) > 0 {
+		return fmt.Errorf("PUT %s: %s", path, out.Errors[0].Description)
 	}
 	return nil
 }

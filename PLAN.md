@@ -65,8 +65,12 @@ als HueStream-v2 an die Pro gestreamt. Stream-Stop → deaktivieren.
   (Link-Button an der Pro → App-Key + clientkey holen), `translate` v2→v1-Lampenliste.
   Verifiziert: HTTPS-only-Annahme bestätigt (HTTP:80 → 301), Pinning, Pairing, 16 Lampen
   über den Proxy als v1-Liste.
-- **M3 — REST-Fallback** ⏳ offen. `PUT lights/groups` → CLIP v2 weiterreichen.
-  *Ziel:* Ambilight steuert die Lampen end-to-end (noch laggy).
+- **M3 — REST-Fallback** ✅ **Lampen-Steuerung FERTIG & am echten Gerät verifiziert.**
+  `PUT lights/{id}/state` → v1→v2-Übersetzung → CLIP-v2-PUT an die Pro (207/errors-Array
+  ausgewertet). Request-Logging ergänzt (um reales TV-Verhalten zu beobachten).
+  Reale Lampe über den Proxy geschaltet. **Offen:** Gruppen-Pfad (`groups/{id}/action`,
+  Gruppen-Listing) ist noch ein geloggter Stub — wird mit M4 anhand des realen TV-Verhaltens
+  vervollständigt.
 - **M4 — Entertainment** ⏳ offen. `huestream` (+Tests), DTLS-Server (TV) + DTLS-Client (Pro),
   Entertainment-Config-Aktivierung, Stream-Forwarding. *Ziel:* flüssiges Ambilight.
 - **M5 — Packaging** ⏳ offen. Dockerfile + `--network=host`-Doku, Persistenz, Web-UI, README.
