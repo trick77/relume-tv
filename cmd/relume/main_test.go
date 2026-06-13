@@ -16,6 +16,7 @@ func TestParseServeOptions_discoveryDiagnostics(t *testing.T) {
 		"-discovery-burst-duration", "90s",
 		"-discovery-burst-interval", "1s",
 		"-identity-profile", "hass",
+		"-ssdp-media-server-alias",
 	})
 
 	// Then
@@ -45,5 +46,8 @@ func TestParseServeOptions_discoveryDiagnostics(t *testing.T) {
 	}
 	if opts.identityProfile != "hass" {
 		t.Errorf("identityProfile = %q", opts.identityProfile)
+	}
+	if !opts.ssdpMediaServerAlias {
+		t.Fatal("ssdpMediaServerAlias = false")
 	}
 }

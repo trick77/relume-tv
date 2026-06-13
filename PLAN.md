@@ -74,6 +74,9 @@ The Bridge Pro breaks the Ambilight+Hue path in three ways:
 - `-identity-profile hass` switches the SSDP `SERVER` header and `description.xml`
   manufacturer fields to the Home Assistant emulated-hue shape. Public issue reports show
   Philips TVs accepting hass-emulated-hue even where diyHue discovery is unreliable.
+- `-ssdp-media-server-alias` is an opt-in experiment for the measured Android TV behavior:
+  it actively broadcasts a `MediaServer:1` SSDP NOTIFY and answers `MediaServer:1` M-SEARCH
+  with the relume `description.xml` location.
 - The real Bridge Pro itself announces `_hue._tcp` as `Hue Bridge - XXXXXX` / `modelid=BSB003`;
   the TV likely filters BSB003 out. relume announces `Philips Hue - XXXXXX` / `modelid=BSB002`.
 - UDP 10102 broadcasts from the TV are DTS Play-Fi (audio) — a red herring, unrelated to Hue.
@@ -86,7 +89,8 @@ The Bridge Pro breaks the Ambilight+Hue path in three ways:
   `relume serve -debug -advertise-ip <nas-lan-ip> -tv-ip <tv-ip>
   -discovery-burst-duration 90s -discovery-burst-interval 1s` and
   `tcpdump -ni <iface> 'host <tv-ip> or udp port 5353 or udp port 1900 or tcp port 80'`.
-  If the default identity is ignored, repeat with `-identity-profile hass`.
+  If the default identity is ignored, repeat with `-identity-profile hass`; if the TV still
+  only emits `MediaServer:1` SSDP, add `-ssdp-media-server-alias`.
 - Exact `HueStream` v2 layout (52-byte header, channel chunks).
 - Exact CLIP v2 calls to create/activate the `entertainment_configuration` on the Pro.
 - Whether the TV requires a specific `swversion`/`apiversion` to attempt Entertainment.

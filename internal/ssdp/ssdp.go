@@ -18,9 +18,10 @@ import (
 const (
 	multicastAddr = "239.255.255.250:1900"
 	// server is the exact SERVER header of a real Hue bridge (verified via diyHue).
-	server      = "Linux/3.14.0 UPnP/1.0 IpBridge/1.20.0"
-	hassServer  = "Hue/1.0 UPnP/1.0 IpBridge/1.48.0"
-	notifyEvery = 60 * time.Second
+	server        = "Linux/3.14.0 UPnP/1.0 IpBridge/1.20.0"
+	hassServer    = "Hue/1.0 UPnP/1.0 IpBridge/1.48.0"
+	mediaServerST = "urn:schemas-upnp-org:device:MediaServer:1"
+	notifyEvery   = 60 * time.Second
 )
 
 // Responder answers SSDP requests for a bridge identity.
@@ -40,6 +41,9 @@ type Responder struct {
 	// IdentityProfile selects experimental wire-identity compatibility tweaks.
 	// Empty keeps the default; "hass" matches Home Assistant emulated-hue.
 	IdentityProfile string
+	// MediaServerAlias also advertises/responds as UPnP MediaServer:1. Some
+	// Philips Android TVs only emit MediaServer searches during Hue+Ambilight scan.
+	MediaServerAlias bool
 }
 
 // New creates a Responder. advIP is the IP advertised in the LOCATION header
@@ -176,8 +180,9 @@ func (r *Responder) handle(conn *net.UDPConn, src *net.UDPAddr, data []byte) {
 	if !strings.HasPrefix(msg, "M-SEARCH") {
 		return
 	}
+	h := parseHeaders(msg)
 	if r.Debug {
-		r.log.Info("ssdp: M-SEARCH answered", "to", src.String())
+		r.log.Info("ssdp: M-SEARCH answered", "to", src.String(), "st", h["ST"], "mediaServerAlias", r.MediaServerAlias)
 	}
 	// We answer broadly (without strict ST matching), as real bridges do — the
 	// TV filters by LOCATION/description.xml. An immediate reply is important
@@ -190,14 +195,9 @@ func (r *Responder) handle(conn *net.UDPConn, src *net.UDPAddr, data []byte) {
 	}
 }
 
-// searchResponses returns the three M-SEARCH 200 OK responses (root, uuid, basic).
+// searchResponses returns the M-SEARCH 200 OK responses for the configured SSDP variants.
 func (r *Responder) searchResponses() []string {
-	uuid := r.id.UUID()
-	variants := []struct{ st, usn string }{
-		{"upnp:rootdevice", "uuid:" + uuid + "::upnp:rootdevice"},
-		{"uuid:" + uuid, "uuid:" + uuid},
-		{"urn:schemas-upnp-org:device:basic:1", "uuid:" + uuid},
-	}
+	variants := r.ssdpVariants()
 	out := make([]string, 0, len(variants))
 	for _, v := range variants {
 		out = append(out, "HTTP/1.1 200 OK\r\n"+
@@ -212,6 +212,29 @@ func (r *Responder) searchResponses() []string {
 			"\r\n")
 	}
 	return out
+}
+
+type ssdpVariant struct {
+	st  string
+	nt  string
+	usn string
+}
+
+func (r *Responder) ssdpVariants() []ssdpVariant {
+	uuid := r.id.UUID()
+	variants := []ssdpVariant{
+		{st: "upnp:rootdevice", nt: "upnp:rootdevice", usn: "uuid:" + uuid + "::upnp:rootdevice"},
+		{st: "uuid:" + uuid, nt: "uuid:" + uuid, usn: "uuid:" + uuid},
+		{st: "urn:schemas-upnp-org:device:basic:1", nt: "urn:schemas-upnp-org:device:basic:1", usn: "uuid:" + uuid},
+	}
+	if r.MediaServerAlias {
+		variants = append(variants, ssdpVariant{
+			st:  mediaServerST,
+			nt:  mediaServerST,
+			usn: "uuid:" + uuid + "::" + mediaServerST,
+		})
+	}
+	return variants
 }
 
 // notifyLoop periodically sends NOTIFY ssdp:alive to the multicast.
@@ -279,12 +302,7 @@ func (r *Responder) sendNotify(conn *net.UDPConn, group *net.UDPAddr) {
 }
 
 func (r *Responder) notifyMessages() []string {
-	uuid := r.id.UUID()
-	variants := []struct{ nt, usn string }{
-		{"upnp:rootdevice", "uuid:" + uuid + "::upnp:rootdevice"},
-		{"uuid:" + uuid, "uuid:" + uuid},
-		{"urn:schemas-upnp-org:device:basic:1", "uuid:" + uuid},
-	}
+	variants := r.ssdpVariants()
 	msgs := make([]string, 0, len(variants))
 	for _, v := range variants {
 		msg := "NOTIFY * HTTP/1.1\r\n" +
