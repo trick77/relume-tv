@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/trick77/relume/internal/config"
+	"github.com/trick77/relume/internal/upnp"
 )
 
 func mustGet(t *testing.T, url string) *http.Response {
@@ -147,6 +148,12 @@ func TestDescriptionXML_withAmbilightProfileKeepsSignifyManufacturerFields(t *te
 	body, _ := io.ReadAll(resp.Body)
 
 	// Then
+	if got := resp.Header.Get("Server"); got != upnp.ServerHeaderAmbilight {
+		t.Errorf("Server header = %q, expected %q", got, upnp.ServerHeaderAmbilight)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "max-age=100" {
+		t.Errorf("Cache-Control = %q, expected max-age=100", got)
+	}
 	xml := string(body)
 	for _, want := range []string{
 		"<deviceType>urn:schemas-upnp-org:device:Basic:1</deviceType>",
@@ -201,6 +208,9 @@ func TestDescriptionXML_withMediaServerAliasContainsMediaServerDeviceTypeForAlia
 	body, _ := io.ReadAll(resp.Body)
 
 	// Then
+	if got := resp.Header.Get("Cache-Control"); got != "max-age=1" {
+		t.Errorf("Cache-Control = %q, expected max-age=1", got)
+	}
 	xml := string(body)
 	for _, want := range []string{
 		"<deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>",

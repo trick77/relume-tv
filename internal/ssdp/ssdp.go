@@ -13,16 +13,13 @@ import (
 	"time"
 
 	"github.com/trick77/relume/internal/config"
+	"github.com/trick77/relume/internal/upnp"
 )
 
 const (
 	multicastAddr = "239.255.255.250:1900"
-	// server is the exact SERVER header of a real Hue bridge (verified via diyHue).
-	server          = "Linux/3.14.0 UPnP/1.0 IpBridge/1.20.0"
-	ambilightServer = "Linux/3.14.0 UPnP/1.0 IpBridge/1.67.0"
-	hassServer      = "Hue/1.0 UPnP/1.0 IpBridge/1.48.0"
-	mediaServerST   = "urn:schemas-upnp-org:device:MediaServer:1"
-	notifyEvery     = 60 * time.Second
+	mediaServerST = "urn:schemas-upnp-org:device:MediaServer:1"
+	notifyEvery   = 60 * time.Second
 )
 
 // Responder answers SSDP requests for a bridge identity.
@@ -140,14 +137,7 @@ func parseHeaders(msg string) map[string]string {
 }
 
 func (r *Responder) serverHeader() string {
-	switch r.IdentityProfile {
-	case "ambilight":
-		return ambilightServer
-	case "hass":
-		return hassServer
-	default:
-		return server
-	}
+	return upnp.ServerHeader(r.IdentityProfile)
 }
 
 // interfaceForIP returns the network interface that carries the given IP.

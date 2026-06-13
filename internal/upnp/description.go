@@ -21,6 +21,27 @@ type Options struct {
 	MediaServerAlias bool
 }
 
+const (
+	// ServerHeaderDefault is the exact SERVER header of a real Hue bridge
+	// (verified via diyHue).
+	ServerHeaderDefault   = "Linux/3.14.0 UPnP/1.0 IpBridge/1.20.0"
+	ServerHeaderAmbilight = "Linux/3.14.0 UPnP/1.0 IpBridge/1.67.0"
+	ServerHeaderHass      = "Hue/1.0 UPnP/1.0 IpBridge/1.48.0"
+)
+
+// ServerHeader returns the UPnP HTTP/SSDP server signature for an identity
+// profile.
+func ServerHeader(profile string) string {
+	switch profile {
+	case "ambilight":
+		return ServerHeaderAmbilight
+	case "hass":
+		return ServerHeaderHass
+	default:
+		return ServerHeaderDefault
+	}
+}
+
 func fieldsForProfile(profile string) profileFields {
 	if profile == "hass" {
 		return profileFields{
