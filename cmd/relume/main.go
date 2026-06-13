@@ -79,6 +79,7 @@ type serveOptions struct {
 	discoveryBurstDuration time.Duration
 	discoveryBurstInterval time.Duration
 	identityProfile        string
+	ssdpMediaServerAlias   bool
 }
 
 func parseServeOptions(args []string) (serveOptions, error) {
@@ -91,6 +92,7 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	burstDuration := fs.Duration("discovery-burst-duration", 0, "send SSDP and mDNS discovery announcements at startup for this long")
 	burstInterval := fs.Duration("discovery-burst-interval", time.Second, "interval for discovery-burst announcements")
 	identityProfile := fs.String("identity-profile", "", "experimental identity profile: empty/default or hass")
+	ssdpMediaServerAlias := fs.Bool("ssdp-media-server-alias", false, "also advertise/respond as UPnP MediaServer:1 for Philips TV discovery experiments")
 	if err := fs.Parse(args); err != nil {
 		return serveOptions{}, err
 	}
@@ -103,6 +105,7 @@ func parseServeOptions(args []string) (serveOptions, error) {
 		discoveryBurstDuration: *burstDuration,
 		discoveryBurstInterval: *burstInterval,
 		identityProfile:        *identityProfile,
+		ssdpMediaServerAlias:   *ssdpMediaServerAlias,
 	}, nil
 }
 
@@ -142,6 +145,7 @@ func runServe(args []string, log *slog.Logger) error {
 	responder.BurstDuration = opts.discoveryBurstDuration
 	responder.BurstInterval = opts.discoveryBurstInterval
 	responder.IdentityProfile = opts.identityProfile
+	responder.MediaServerAlias = opts.ssdpMediaServerAlias
 	announcer := mdns.New(cfg.Identity, ip, opts.httpPort, log)
 	announcer.BurstDuration = opts.discoveryBurstDuration
 	announcer.BurstInterval = opts.discoveryBurstInterval
