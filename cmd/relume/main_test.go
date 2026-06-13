@@ -16,6 +16,7 @@ func TestParseServeOptions_discoveryDiagnostics(t *testing.T) {
 		"-discovery-burst-duration", "90s",
 		"-discovery-burst-interval", "1s",
 		"-identity-profile", "ambilight",
+		"-description-profile", "ambilight-reference",
 		"-ssdp-media-server-alias",
 		"-ssdp-descriptor-variants",
 	})
@@ -47,6 +48,9 @@ func TestParseServeOptions_discoveryDiagnostics(t *testing.T) {
 	}
 	if opts.identityProfile != "ambilight" {
 		t.Errorf("identityProfile = %q", opts.identityProfile)
+	}
+	if opts.descriptionProfile != "ambilight-reference" {
+		t.Errorf("descriptionProfile = %q", opts.descriptionProfile)
 	}
 	if !opts.ssdpMediaServerAlias {
 		t.Fatal("ssdpMediaServerAlias = false")

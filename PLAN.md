@@ -83,6 +83,10 @@ The Bridge Pro breaks the Ambilight+Hue path in three ways:
 - `-ssdp-descriptor-variants` adds `LOCATION: /description.xml?relume=basic1` under the
   same `MediaServer:1` ST/NT. That URL still serves `deviceType=Basic:1`. It tests whether
   the TV follows the MediaServer SSDP trigger but rejects the MediaServer descriptor body.
+- `-description-profile ambilight-reference` keeps the same discovery identity but changes
+  `description.xml` formatting/friendlyName to match the active Ambilight OSS bridge more
+  closely. It tests whether the TV parses then rejects relume's descriptor before starting
+  CLIP v1 pairing.
 - The real Bridge Pro itself announces `_hue._tcp` as `Hue Bridge - XXXXXX` / `modelid=BSB003`;
   the TV likely filters BSB003 out. relume announces `Philips Hue - XXXXXX` / `modelid=BSB002`.
 - UDP 10102 broadcasts from the TV are DTS Play-Fi (audio) — a red herring, unrelated to Hue.
@@ -99,6 +103,7 @@ The Bridge Pro breaks the Ambilight+Hue path in three ways:
 | `0.1.11` | Ambilight serial, UDN, and SSDP UUID/USN changed to lower bridgeid with `FFFE`. | TV still stopped after descriptor fetch. |
 | `0.1.12` | Basic:1 SSDP USN changed to `uuid::<urn:...:basic:1>`. | After TV reboot, it fetched plain `/description.xml` and `/description.xml?relume=ms1`; still no `/api`. |
 | `0.1.13` | Added `-ssdp-descriptor-variants` and `/description.xml?relume=basic1`. | Windows Chromium/DIAL fetched `basic1`; the TV fetched plain `/description.xml` and `?relume=ms1` only. Still no `/api`. |
+| `0.1.15` | Added `-description-profile ambilight-reference`. | Pending real-TV result. |
 
 ## Open items (verify on the real device)
 
