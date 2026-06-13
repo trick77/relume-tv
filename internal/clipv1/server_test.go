@@ -168,6 +168,31 @@ func TestDescriptionXML_withAmbilightProfileKeepsSignifyManufacturerFields(t *te
 	}
 }
 
+func TestDescriptionXML_withAmbilightReferenceDescriptionProfile(t *testing.T) {
+	// Given
+	s, ts := newTestServer(t)
+	s.IdentityProfile = "ambilight"
+	s.DescriptionProfile = "ambilight-reference"
+
+	// When
+	resp := mustGet(t, ts.URL+"/description.xml")
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	// Then
+	xml := string(body)
+	for _, want := range []string{
+		"<specVersion><major>1</major><minor>0</minor></specVersion>",
+		"<friendlyName>Ambilight Bridge (10.0.0.5)</friendlyName>",
+		"<manufacturer>Signify</manufacturer>",
+		"<modelNumber>BSB002</modelNumber>",
+	} {
+		if !strings.Contains(xml, want) {
+			t.Errorf("description.xml does not contain %q:\n%s", want, xml)
+		}
+	}
+}
+
 func TestDescriptionXML_withMediaServerAliasKeepsDefaultDeviceTypeForPlainPath(t *testing.T) {
 	// Given
 	s, ts := newTestServer(t)

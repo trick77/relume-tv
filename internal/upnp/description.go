@@ -17,8 +17,9 @@ type profileFields struct {
 
 // Options selects experimental compatibility tweaks for description.xml.
 type Options struct {
-	Profile          string
-	MediaServerAlias bool
+	Profile            string
+	DescriptionProfile string
+	MediaServerAlias   bool
 }
 
 const (
@@ -82,6 +83,28 @@ const tmplText = `<?xml version="1.0" encoding="UTF-8" ?>
 
 var tmpl = template.Must(template.New("description").Parse(tmplText))
 
+const ambilightReferenceTmplText = `<?xml version="1.0" encoding="UTF-8" ?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+<specVersion><major>1</major><minor>0</minor></specVersion>
+<URLBase>http://{{.IP}}:{{.Port}}/</URLBase>
+<device>
+<deviceType>{{.DeviceType}}</deviceType>
+<friendlyName>Ambilight Bridge ({{.IP}})</friendlyName>
+<manufacturer>{{.Manufacturer}}</manufacturer>
+<manufacturerURL>{{.ManufacturerURL}}</manufacturerURL>
+<modelDescription>Philips hue Personal Wireless Lighting</modelDescription>
+<modelName>Philips hue bridge 2015</modelName>
+<modelNumber>BSB002</modelNumber>
+<modelURL>http://www.meethue.com</modelURL>
+<serialNumber>{{.Serial}}</serialNumber>
+<UDN>uuid:{{.UUID}}</UDN>
+<presentationURL>index.html</presentationURL>
+</device>
+</root>
+`
+
+var ambilightReferenceTmpl = template.Must(template.New("ambilight-reference-description").Parse(ambilightReferenceTmplText))
+
 // Render generates the description.xml for the given identity and address.
 func Render(id config.Identity, ip string, port int) (string, error) {
 	return RenderWithProfile(id, ip, port, "")
@@ -104,7 +127,11 @@ func RenderWithOptions(id config.Identity, ip string, port int, opts Options) (s
 	if opts.MediaServerAlias {
 		deviceType = "urn:schemas-upnp-org:device:MediaServer:1"
 	}
-	err := tmpl.Execute(&sb, struct {
+	descriptionTemplate := tmpl
+	if opts.DescriptionProfile == "ambilight-reference" {
+		descriptionTemplate = ambilightReferenceTmpl
+	}
+	err := descriptionTemplate.Execute(&sb, struct {
 		IP              string
 		Port            int
 		DeviceType      string

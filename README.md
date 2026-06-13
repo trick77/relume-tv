@@ -50,6 +50,8 @@ Useful `serve` flags: `-http-port` (default 80), `-advertise-ip` (empty = auto),
 `-debug` (SSDP/HTTP diagnostics + mDNS observer), `-tv-ip` (log all mDNS
 questions from that TV), `-discovery-burst-duration`, `-discovery-burst-interval`,
 `-identity-profile ambilight` or `hass` (experimental wire identity profiles),
+`-description-profile ambilight-reference` (experimental `description.xml` body
+format matching the Ambilight OSS bridge more closely),
 `-ssdp-media-server-alias` (experimental UPnP MediaServer:1 NOTIFY/response and
 query-scoped `description.xml` device type alias; uses a cache-busted SSDP location),
 `-ssdp-descriptor-variants` (extra query-scoped SSDP locations for one-scan
@@ -89,6 +91,11 @@ relume serve -debug -advertise-ip <nas-lan-ip> -tv-ip <tv-ip> \
   -discovery-burst-duration 90s -discovery-burst-interval 1s \
   -identity-profile ambilight -ssdp-media-server-alias -ssdp-descriptor-variants
 
+# To test whether the TV rejects relume's descriptor formatting, match the OSS descriptor:
+relume serve -debug -advertise-ip <nas-lan-ip> -tv-ip <tv-ip> \
+  -identity-profile ambilight -description-profile ambilight-reference \
+  -ssdp-media-server-alias
+
 sudo tcpdump -ni <iface> 'host <tv-ip> or udp port 5353 or udp port 1900 or tcp port 80'
 ```
 
@@ -119,6 +126,9 @@ Discovery experiments already tried on the real TV:
   descriptor body. Result: Windows Chromium/DIAL (`192.168.178.165`) fetched `basic1`,
   but the Philips TV (`192.168.178.112`) fetched only plain `/description.xml` and
   `?relume=ms1`; still no `/api`.
+- `0.1.15`: adds `-description-profile ambilight-reference`, keeping discovery identity
+  stable while making `description.xml` formatting/friendlyName match the active
+  Ambilight OSS bridge more closely. Pending real-TV result.
 
 relume announces `Philips Hue - XXXXXX` / `modelid=BSB002`. The real Bridge Pro
 announces itself as `BSB003`, which the TV likely rejects as incompatible.

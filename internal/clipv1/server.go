@@ -48,6 +48,9 @@ type Server struct {
 	// Empty keeps the default; "ambilight" matches the Ambilight-specific
 	// OSS emulator; "hass" matches Home Assistant emulated-hue.
 	IdentityProfile string
+	// DescriptionProfile selects experimental description.xml body formatting.
+	// Empty keeps the default; "ambilight-reference" matches the Ambilight OSS descriptor.
+	DescriptionProfile string
 	// MediaServerAlias makes /description.xml match the opt-in SSDP MediaServer:1 alias.
 	MediaServerAlias bool
 
@@ -164,8 +167,9 @@ func (s *Server) handleDescription(w http.ResponseWriter, r *http.Request) {
 	// Other relume query variants keep the Hue Basic body but use short cache headers.
 	mediaServerAlias := s.MediaServerAlias && relumeVariant == "ms1"
 	xml, err := upnp.RenderWithOptions(s.cfg.Identity, s.advIP, s.httpPort, upnp.Options{
-		Profile:          s.IdentityProfile,
-		MediaServerAlias: mediaServerAlias,
+		Profile:            s.IdentityProfile,
+		DescriptionProfile: s.DescriptionProfile,
+		MediaServerAlias:   mediaServerAlias,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

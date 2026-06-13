@@ -79,6 +79,7 @@ type serveOptions struct {
 	discoveryBurstDuration time.Duration
 	discoveryBurstInterval time.Duration
 	identityProfile        string
+	descriptionProfile     string
 	ssdpMediaServerAlias   bool
 	ssdpDescriptorVariants bool
 }
@@ -93,6 +94,7 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	burstDuration := fs.Duration("discovery-burst-duration", 0, "send SSDP and mDNS discovery announcements at startup for this long")
 	burstInterval := fs.Duration("discovery-burst-interval", time.Second, "interval for discovery-burst announcements")
 	identityProfile := fs.String("identity-profile", "", "experimental identity profile: empty/default, ambilight, or hass")
+	descriptionProfile := fs.String("description-profile", "", "experimental description.xml profile: empty/default or ambilight-reference")
 	ssdpMediaServerAlias := fs.Bool("ssdp-media-server-alias", false, "also advertise/respond as UPnP MediaServer:1 for Philips TV discovery experiments")
 	ssdpDescriptorVariants := fs.Bool("ssdp-descriptor-variants", false, "also advertise query-scoped descriptor variants for Philips TV discovery experiments")
 	if err := fs.Parse(args); err != nil {
@@ -107,6 +109,7 @@ func parseServeOptions(args []string) (serveOptions, error) {
 		discoveryBurstDuration: *burstDuration,
 		discoveryBurstInterval: *burstInterval,
 		identityProfile:        *identityProfile,
+		descriptionProfile:     *descriptionProfile,
 		ssdpMediaServerAlias:   *ssdpMediaServerAlias,
 		ssdpDescriptorVariants: *ssdpDescriptorVariants,
 	}, nil
@@ -136,6 +139,7 @@ func runServe(args []string, log *slog.Logger) error {
 	clip := clipv1.New(cfg, ip, opts.httpPort, log)
 	clip.Debug = opts.debug
 	clip.IdentityProfile = opts.identityProfile
+	clip.DescriptionProfile = opts.descriptionProfile
 	clip.MediaServerAlias = opts.ssdpMediaServerAlias
 	if cfg.Pro != nil {
 		client := bridgepro.New(cfg.Pro)
