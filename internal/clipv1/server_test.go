@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/trick77/relume/internal/config"
 	"github.com/trick77/relume/internal/upnp"
@@ -549,6 +550,53 @@ func TestDatastore_lightsEmptyWhenNoProvider(t *testing.T) {
 	lights, ok := ds["lights"].(map[string]any)
 	if !ok || len(lights) != 0 {
 		t.Fatalf("datastore lights = %v, want empty object", ds["lights"])
+	}
+}
+
+func TestLightStateWriteID_matchesOnlyStatePUTs(t *testing.T) {
+	cases := []struct {
+		method, path string
+		wantID       string
+		wantOK       bool
+	}{
+		{"PUT", "/api/abc/lights/3/state", "3", true},
+		{"PUT", "/api/abc/lights/12/state", "12", true},
+		{"GET", "/api/abc/lights/3/state", "", false},       // not a write
+		{"PUT", "/api/abc/lights/3", "", false},             // not a state path
+		{"PUT", "/api/abc/groups/1/action", "", false},      // group, not light
+		{"PUT", "/api/abc/lights//state", "", false},        // empty id
+		{"PUT", "/api/abc/lights/3/state/extra", "", false}, // deeper path
+	}
+	for _, c := range cases {
+		req, _ := http.NewRequest(c.method, "http://x"+c.path, nil)
+		id, ok := lightStateWriteID(req)
+		if ok != c.wantOK || id != c.wantID {
+			t.Errorf("%s %s -> (%q,%v), want (%q,%v)", c.method, c.path, id, ok, c.wantID, c.wantOK)
+		}
+	}
+}
+
+func TestActivitySummary_accumulatesDistinctLightsAndResets(t *testing.T) {
+	// Given: several light-state writes recorded, some repeating the same light
+	s, _ := newTestServer(t)
+	for _, id := range []string{"1", "1", "2", "3", "3", "3"} {
+		s.recordLightWrite(id)
+	}
+
+	// When: the periodic summary fires
+	var buf strings.Builder
+	s.log = slog.New(slog.NewTextHandler(&buf, nil))
+	s.flushActivity(30 * time.Second)
+
+	// Then: it reports 6 writes across 3 distinct lights, then resets
+	out := buf.String()
+	if !strings.Contains(out, "light_state_writes=6") || !strings.Contains(out, "lights=3") {
+		t.Fatalf("summary = %q", out)
+	}
+	buf.Reset()
+	s.flushActivity(30 * time.Second) // nothing accumulated since reset
+	if buf.Len() != 0 {
+		t.Fatalf("expected no summary after reset, got %q", buf.String())
 	}
 }
 
