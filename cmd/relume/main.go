@@ -152,7 +152,7 @@ func runServe(args []string, log *slog.Logger) error {
 	clip.MediaServerBasicBody = opts.ssdpMediaServerBasicBody
 	if cfg.Pro != nil {
 		client := bridgepro.New(cfg.Pro)
-		clip.SetLightProvider(bridge.NewLightProvider(client))
+		clip.SetLightProvider(bridge.NewLightProvider(client, log))
 		log.Info("bridge pro paired", "host", cfg.Pro.Host)
 	}
 	var responder *ssdp.Responder
@@ -291,7 +291,7 @@ func autoPairPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, b
 				return
 			}
 			client := bridgepro.New(pro)
-			clip.SetLightProvider(bridge.NewLightProvider(client))
+			clip.SetLightProvider(bridge.NewLightProvider(client, log))
 			log.Info("bridge pro paired (auto)", "host", host)
 			if lights, lerr := client.Lights(); lerr == nil {
 				log.Info("bridge pro lights available", "count", len(lights))
@@ -354,7 +354,7 @@ func watchPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, brid
 			log.Error("persisting reconnected bridge pro", "err", serr)
 			continue
 		}
-		clip.SetLightProvider(bridge.NewLightProvider(bridgepro.New(updated)))
+		clip.SetLightProvider(bridge.NewLightProvider(bridgepro.New(updated), log))
 		pro = updated
 		log.Info("bridge pro reconnected", "host", host)
 	}
