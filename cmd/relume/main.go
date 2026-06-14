@@ -183,6 +183,10 @@ func runServe(args []string, log *slog.Logger) error {
 		go autoPairPro(ctx, cfg, clip, opts.bridgeIP, opts.skipTLS, log)
 	}
 
+	// Summarize the high-frequency Ambilight light-state writes periodically
+	// instead of logging every single request.
+	go clip.LogActivitySummary(ctx, 30*time.Second)
+
 	go func() {
 		if err := announcer.Run(ctx); err != nil && ctx.Err() == nil {
 			log.Warn("mdns announcer", "err", err)

@@ -5,6 +5,7 @@ package clipv1
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/trick77/relume/internal/config"
 	"github.com/trick77/relume/internal/upnp"
@@ -54,11 +56,18 @@ type Server struct {
 	// TVIP is the TV's IP (from -tv-ip). Pairing is auto-accepted only for the TV,
 	// identified by this IP or by the Android/Dalvik Philips-TV User-Agent.
 	TVIP string
+
+	// activity accumulates the high-frequency light-state writes Ambilight sends
+	// (REST control path) so they can be summarized periodically instead of
+	// logging every single request. See LogActivitySummary.
+	activityMu    sync.Mutex
+	lightWrites   uint64
+	lightsTouched map[string]struct{}
 }
 
 // New creates the CLIP-v1 server.
 func New(cfg *config.Config, advIP string, httpPort int, log *slog.Logger) *Server {
-	return &Server{cfg: cfg, advIP: advIP, httpPort: httpPort, log: log}
+	return &Server{cfg: cfg, advIP: advIP, httpPort: httpPort, log: log, lightsTouched: map[string]struct{}{}}
 }
 
 // SetLightProvider registers the source for the light list (Bridge Pro backend).
@@ -142,6 +151,11 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 				"user-agent", r.UserAgent(),
 				"body", string(body),
 			)
+		} else if id, ok := lightStateWriteID(r); ok {
+			// Ambilight pushes light-state writes many times per second over the
+			// REST path; logging each one floods the log. Accumulate and let
+			// LogActivitySummary emit a periodic rollup instead.
+			s.recordLightWrite(id)
 		} else {
 			s.log.Info("http", "method", r.Method, "path", r.URL.Path, "from", r.RemoteAddr)
 		}
@@ -150,6 +164,66 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 			s.log.Info("http tx", "method", r.Method, "requestURI", r.URL.RequestURI(), "status", rec.status, "bytes", rec.bytes)
 		}
 	})
+}
+
+// lightStateWriteID returns the light ID of a PUT /api/{user}/lights/{id}/state
+// request (the high-frequency Ambilight control write), and whether it matched.
+func lightStateWriteID(r *http.Request) (string, bool) {
+	if r.Method != http.MethodPut {
+		return "", false
+	}
+	const lights = "/lights/"
+	i := strings.Index(r.URL.Path, lights)
+	if i < 0 || !strings.HasSuffix(r.URL.Path, "/state") {
+		return "", false
+	}
+	id := r.URL.Path[i+len(lights) : len(r.URL.Path)-len("/state")]
+	if id == "" || strings.Contains(id, "/") {
+		return "", false
+	}
+	return id, true
+}
+
+// recordLightWrite accumulates one Ambilight light-state write for the periodic
+// summary emitted by LogActivitySummary.
+func (s *Server) recordLightWrite(id string) {
+	s.activityMu.Lock()
+	s.lightWrites++
+	s.lightsTouched[id] = struct{}{}
+	s.activityMu.Unlock()
+}
+
+// LogActivitySummary logs a rollup of the accumulated Ambilight light-state
+// writes every interval (only when there was activity), then resets the counters.
+// It blocks until ctx is cancelled; run it in a goroutine.
+func (s *Server) LogActivitySummary(ctx context.Context, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.flushActivity(interval)
+		}
+	}
+}
+
+// flushActivity logs the accumulated Ambilight light-state writes (if any) and
+// resets the counters. window is the period the counts cover.
+func (s *Server) flushActivity(window time.Duration) {
+	s.activityMu.Lock()
+	writes, lights := s.lightWrites, len(s.lightsTouched)
+	s.lightWrites = 0
+	s.lightsTouched = map[string]struct{}{}
+	s.activityMu.Unlock()
+	if writes > 0 {
+		s.log.Info("ambilight activity",
+			"light_state_writes", writes,
+			"lights", lights,
+			"window", window.String(),
+		)
+	}
 }
 
 type statusRecorder struct {
