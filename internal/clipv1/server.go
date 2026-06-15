@@ -104,8 +104,9 @@ type Server struct {
 
 // defaultPairAcceptDelay is how long relume defers auto-accepting the TV's first
 // pairing. The TV polls POST /api and waits up to ~30s, so this stays well inside
-// its window.
-const defaultPairAcceptDelay = 5 * time.Second
+// its window. Only the FIRST pairing of a devicetype is delayed; an already-paired
+// TV is served instantly from the idempotent path.
+const defaultPairAcceptDelay = 10 * time.Second
 
 // New creates the CLIP-v1 server.
 func New(cfg *config.Config, advIP string, httpPort int, log *slog.Logger) *Server {
