@@ -43,8 +43,33 @@ func (f *fakeClient) seen() []int {
 
 func newTestProvider(c proClient) *LightProvider {
 	p := &LightProvider{client: c, pending: map[string]map[string]any{}}
-	p.v1ToUUID = map[string]string{"1": "uuid-1"} // skip the Lights() resolution
+	p.v1ToUUID = map[string]string{"1": "uuid-1", "2": "uuid-2"} // skip the Lights() resolution
 	return p
+}
+
+func TestOnControlled_firesOnEveryForward(t *testing.T) {
+	// Given: a provider that reports which UUIDs the TV drives
+	fc := &fakeClient{}
+	p := newTestProvider(fc)
+	var mu sync.Mutex
+	var got []string
+	p.OnControlled = func(uuid string) {
+		mu.Lock()
+		got = append(got, uuid)
+		mu.Unlock()
+	}
+
+	// When: light 1 is driven twice and light 2 once
+	_ = p.forward("1", map[string]any{"ct": 200})
+	_ = p.forward("1", map[string]any{"ct": 200})
+	_ = p.forward("2", map[string]any{"ct": 200})
+
+	// Then: it fires on every forward (so the sliding window keeps being refreshed)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 3 || got[0] != "uuid-1" || got[1] != "uuid-1" || got[2] != "uuid-2" {
+		t.Fatalf("OnControlled calls = %v, want [uuid-1 uuid-1 uuid-2]", got)
+	}
 }
 
 func TestSetLightV1_isAsyncAndForwards(t *testing.T) {

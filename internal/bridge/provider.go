@@ -28,6 +28,12 @@ type LightProvider struct {
 	client proClient
 	log    *slog.Logger
 
+	// OnControlled, if set, is called with the Bridge Pro UUID of each light the TV
+	// drives, on every per-light forward. It feeds the sliding-window ControlledSet
+	// so the restart/idle flash and idle-off touch only the bulbs the TV is
+	// currently driving, not the whole home. Wired by main.
+	OnControlled func(uuid string)
+
 	mu        sync.Mutex
 	cached    map[string]any
 	v1ToUUID  map[string]string
@@ -159,6 +165,9 @@ func (p *LightProvider) forward(v1id string, v1state map[string]any) error {
 		if uuid, ok = p.UUIDForV1(v1id); !ok {
 			return fmt.Errorf("unknown light id %q", v1id)
 		}
+	}
+	if p.OnControlled != nil {
+		p.OnControlled(uuid)
 	}
 	return p.client.SetLight(uuid, translate.StateV1ToV2(v1state))
 }
