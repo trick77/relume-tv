@@ -67,7 +67,10 @@ All repo content (docs, code comments, logs) is English.
 - cert self-signed Signify (CN=root-bridge, leaf OU=BSB003) → pin leaf SHA-256, do NOT trust CA chain. `-skip-tls-verify` fallback.
 - pair = POST https://<ip>/api {devicetype,generateclientkey:true}; physical button = brief TAP not hold; error 101 = not pressed.
 - PUT returns 207 multi-status with per-attribute `errors[]` even when HTTP-ok → inspect errors[], not just status code.
-- CT-only lights reject `color.xy` → 207 error. v2 lights have no reliable id_v1 → assign stable v1 ids by sorted-UUID order.
+- CT-only lights reject `color.xy` → 207 error. So `translate.LightsV1` offers ONLY color-capable
+  lights (CLIP v2 `color` present); white/CT/dimmable/on-off are filtered out. Light type/modelid
+  reflect real capability (not always "Extended color light"). v2 lights have no reliable id_v1 →
+  assign stable v1 ids by sorted-UUID order over the KEPT lights.
 
 ## deployment
 - needs same L2 as TV (SSDP+mDNS multicast) → Docker `network_mode: host`.
