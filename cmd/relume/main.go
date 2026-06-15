@@ -431,95 +431,51 @@ func autoPairPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, c
 // across reboots and DHCP IP changes.
 func watchPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, controlled *bridge.ControlledSet, bridgeIP string, skipTLS bool, log *slog.Logger) {
 	const checkInterval = 60 * time.Second
-	// While the Pro stays down, remind only occasionally instead of warning every
-	// check — a powered-off Pro is an expected state (e.g. the discovery workaround).
-	const downReminderInterval = 15 * time.Minute
 	pro := cfg.Pro
 	if pro == nil {
 		return
 	}
-
-	down := false
-	var downSince, lastDownLog time.Time
-	// noteDown reports the Pro is unreachable: one clear, actionable warning on the
-	// transition, then a throttled reminder — the intermediate reconnect attempts
-	// (rediscovery, cert fetch) are folded in and not warned about individually.
-	noteDown := func(reason error) {
-		now := time.Now()
-		if !down {
-			down, downSince, lastDownLog = true, now, now
-			log.Warn("bridge pro not reachable — is it turned off? "+
-				"relume can't control the lights until it's back on. Turn the Bridge Pro back on "+
-				"(or check its power/network cable); retrying every 60s.",
-				"host", pro.Host, "err", reason)
-			return
-		}
-		if now.Sub(lastDownLog) >= downReminderInterval {
-			lastDownLog = now
-			log.Warn("bridge pro still not reachable", "host", pro.Host,
-				"down_for", time.Since(downSince).Round(time.Second).String())
-		}
-	}
-	// noteUp clears the down state and logs recovery once.
-	noteUp := func(host string) {
-		if down {
-			log.Info("bridge pro reachable again", "host", host,
-				"down_for", time.Since(downSince).Round(time.Second).String())
-			down = false
-		}
-	}
-
 	for sleepCtx(ctx, checkInterval) {
 		if _, err := bridgepro.New(pro).Lights(); err == nil {
-			noteUp(pro.Host)
-			continue // reachable at the known address
-		} else {
-			lastErr := err
+			continue // still reachable
+		}
+		log.Warn("Hue Bridge Pro not reachable — is it turned off? "+
+			"Turn it back on (or check its power/network cable); "+
+			"relume can't control the lights until it is back. Retrying.", "host", pro.Host)
 
-			// Try to recover the Pro at a (possibly new) address — quietly; only the
-			// down state above is surfaced, and only the outcome below.
-			host := bridgeIP
-			if host == "" {
-				if bridges, derr := bridgepro.Discover(); derr == nil && len(bridges) > 0 {
-					host = bridges[0].InternalIPAddress
-				}
-			}
-			if host == "" {
-				noteDown(lastErr)
-				continue
-			}
-
-			certSHA := pro.CertSHA256
-			if !skipTLS && !pro.SkipTLSVerify {
-				fp, ferr := bridgepro.FetchLeafFingerprint(host)
-				if ferr != nil {
-					noteDown(ferr)
-					continue
-				}
-				certSHA = fp
-			}
-
-			updated := reconnectProConfig(pro, host, certSHA, skipTLS)
-			if _, err := bridgepro.New(updated).Lights(); err != nil {
-				noteDown(err)
-				continue
-			}
-			if serr := cfg.SetPro(updated); serr != nil {
-				log.Error("persisting reconnected bridge pro", "err", serr)
-				continue
-			}
-			clip.SetLightProvider(newProvider(bridgepro.New(updated), controlled, log))
-			movedTo := ""
-			if updated.Host != pro.Host {
-				movedTo = updated.Host
-			}
-			pro = updated
-			if down {
-				noteUp(host)
-			} else if movedTo != "" {
-				log.Info("bridge pro reconnected at a new address", "host", movedTo)
+		host := bridgeIP
+		if host == "" {
+			if bridges, derr := bridgepro.Discover(); derr == nil && len(bridges) > 0 {
+				host = bridges[0].InternalIPAddress
 			}
 		}
+		if host == "" {
+			log.Warn("Hue Bridge Pro reconnect: not found via discovery; will retry")
+			continue
+		}
+
+		certSHA := pro.CertSHA256
+		if !skipTLS && !pro.SkipTLSVerify {
+			fp, ferr := bridgepro.FetchLeafFingerprint(host)
+			if ferr != nil {
+				log.Warn("Hue Bridge Pro reconnect: cert fetch failed; will retry", "host", host, "err", ferr)
+				continue
+			}
+			certSHA = fp
+		}
+
+		updated := reconnectProConfig(pro, host, certSHA, skipTLS)
+		if _, err := bridgepro.New(updated).Lights(); err != nil {
+			log.Warn("Hue Bridge Pro reconnect: still unreachable", "host", host, "err", err)
+			continue
+		}
+		if serr := cfg.SetPro(updated); serr != nil {
+			log.Error("persisting reconnected Hue Bridge Pro", "err", serr)
+			continue
+		}
+		clip.SetLightProvider(newProvider(bridgepro.New(updated), controlled, log))
+		pro = updated
+		log.Info("Hue Bridge Pro reconnected", "host", host)
 	}
 }
 
