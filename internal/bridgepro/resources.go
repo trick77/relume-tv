@@ -53,6 +53,25 @@ func (c *Client) BridgeInfo() (name, bridgeID string, err error) {
 	return name, bridgeID, nil
 }
 
+// LightDimming / LightColor / LightColorTemperature are the capability sub-objects
+// of a CLIP v2 light. They are POINTERS on Light so their absence (the Bridge Pro
+// omits the key for unsupported capabilities) is distinguishable from a zero value
+// — that is how relume knows what a bulb can actually do.
+type LightDimming struct {
+	Brightness float64 `json:"brightness"`
+}
+
+type LightColor struct {
+	XY struct {
+		X float64 `json:"x"`
+		Y float64 `json:"y"`
+	} `json:"xy"`
+}
+
+type LightColorTemperature struct {
+	Mirek int `json:"mirek"`
+}
+
 // Light is the subset of a CLIP v2 light resource that is relevant for relume.
 type Light struct {
 	ID       string `json:"id"`
@@ -63,23 +82,24 @@ type Light struct {
 	On struct {
 		On bool `json:"on"`
 	} `json:"on"`
-	Dimming struct {
-		Brightness float64 `json:"brightness"`
-	} `json:"dimming"`
-	Color struct {
-		XY struct {
-			X float64 `json:"x"`
-			Y float64 `json:"y"`
-		} `json:"xy"`
-	} `json:"color"`
-	ColorTemperature struct {
-		Mirek int `json:"mirek"`
-	} `json:"color_temperature"`
+	Dimming          *LightDimming          `json:"dimming,omitempty"`
+	Color            *LightColor            `json:"color,omitempty"`
+	ColorTemperature *LightColorTemperature `json:"color_temperature,omitempty"`
 	// Owner references the associated device (for stable sorting/names).
 	Owner struct {
 		RID string `json:"rid"`
 	} `json:"owner"`
 }
+
+// HasColor reports whether the bulb supports color (xy) — the capability the
+// Ambilight stream needs.
+func (l Light) HasColor() bool { return l.Color != nil }
+
+// HasColorTemperature reports whether the bulb supports color temperature.
+func (l Light) HasColorTemperature() bool { return l.ColorTemperature != nil }
+
+// HasDimming reports whether the bulb is dimmable.
+func (l Light) HasDimming() bool { return l.Dimming != nil }
 
 type lightList struct {
 	Errors []any   `json:"errors"`

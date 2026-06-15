@@ -17,34 +17,44 @@ type LightMap struct {
 	V1ToUUID map[string]string
 }
 
-// LightsV1 translates the v2 lights into the v1 structure. The Bridge Pro no longer
-// provides reliable id_v1 values (CLIP v2); therefore we assign stable numeric
-// IDs based on the UUID-sorted order.
+// LightsV1 translates the v2 lights into the v1 structure. Only color-capable
+// lights are offered: the Ambilight stream pushes xy colors, so non-color bulbs
+// (white/CT/dimmable/on-off) cannot follow it and would make the Bridge Pro
+// reject the xy writes (207). Numeric v1 IDs are assigned over the KEPT lights in
+// the caller's (UUID-sorted) order, so they stay stable while the bulb set is.
 func LightsV1(lights []bridgepro.Light) LightMap {
 	v1 := make(map[string]any, len(lights))
 	rev := make(map[string]string, len(lights))
-	for i, l := range lights {
-		id := strconv.Itoa(i + 1)
-		rev[id] = l.ID
-		v1[id] = lightV1(l)
+	id := 0
+	for _, l := range lights {
+		if !l.HasColor() {
+			continue // not color-capable → not usable for Ambilight
+		}
+		id++
+		sid := strconv.Itoa(id)
+		rev[sid] = l.ID
+		v1[sid] = lightV1(l)
 	}
 	return LightMap{V1: v1, V1ToUUID: rev}
 }
 
-// lightV1 builds a single v1 light object from a v2 light.
+// lightV1 builds a single v1 light object from a v2 light, reflecting its real
+// capabilities (type + which state fields it exposes) rather than always claiming
+// to be a color lamp.
 func lightV1(l bridgepro.Light) map[string]any {
 	state := map[string]any{
 		"on":        l.On.On,
-		"bri":       briFromPercent(l.Dimming.Brightness),
 		"alert":     "none",
 		"reachable": true,
 	}
-	// Color/white mode: v2 uses xy or mirek.
-	if l.Color.XY.X != 0 || l.Color.XY.Y != 0 {
+	if l.HasDimming() {
+		state["bri"] = briFromPercent(l.Dimming.Brightness)
+	}
+	if l.HasColor() && (l.Color.XY.X != 0 || l.Color.XY.Y != 0) {
 		state["xy"] = []float64{l.Color.XY.X, l.Color.XY.Y}
 		state["colormode"] = "xy"
 	}
-	if l.ColorTemperature.Mirek != 0 {
+	if l.HasColorTemperature() && l.ColorTemperature.Mirek != 0 {
 		state["ct"] = l.ColorTemperature.Mirek
 		if _, hasXY := state["xy"]; !hasXY {
 			state["colormode"] = "ct"
@@ -54,15 +64,32 @@ func lightV1(l bridgepro.Light) map[string]any {
 	if name == "" {
 		name = "Hue light " + l.ID[:8]
 	}
+	typ, modelid, productname := lightProfile(l.HasColor(), l.HasColorTemperature(), l.HasDimming())
 	return map[string]any{
 		"state":            state,
-		"type":             "Extended color light",
+		"type":             typ,
 		"name":             name,
-		"modelid":          "LCT015",
+		"modelid":          modelid,
 		"manufacturername": "Signify Netherlands B.V.",
-		"productname":      "Hue color lamp",
+		"productname":      productname,
 		"uniqueid":         l.ID,
 		"swversion":        "1.122.2",
+	}
+}
+
+// lightProfile maps the bulb's capabilities to the v1 type/modelid/productname.
+func lightProfile(color, ct, dim bool) (typ, modelid, productname string) {
+	switch {
+	case color && ct:
+		return "Extended color light", "LCT015", "Hue color lamp"
+	case color:
+		return "Color light", "LCT015", "Hue color lamp"
+	case ct:
+		return "Color temperature light", "LTW001", "Hue ambiance lamp"
+	case dim:
+		return "Dimmable light", "LWB010", "Hue white lamp"
+	default:
+		return "On/Off plug-in unit", "LOM001", "Hue Smart plug"
 	}
 }
 

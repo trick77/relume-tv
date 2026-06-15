@@ -6,43 +6,88 @@ import (
 	"github.com/trick77/relume/internal/bridgepro"
 )
 
-func TestLightsV1_mapsAndAssignsStableIDs(t *testing.T) {
-	// Given: two v2 lights (unsorted by UUID)
-	var a, b bridgepro.Light
-	a.ID = "bbbb-2"
-	a.Metadata.Name = "Sofa"
-	a.On.On = true
-	a.Dimming.Brightness = 100
-	a.Color.XY.X = 0.5
-	a.Color.XY.Y = 0.4
-	b.ID = "aaaa-1"
-	b.Metadata.Name = "Decke"
-	b.ColorTemperature.Mirek = 300
+func colorLight(id, name string) bridgepro.Light {
+	var l bridgepro.Light
+	l.ID = id
+	l.Metadata.Name = name
+	l.On.On = true
+	l.Dimming = &bridgepro.LightDimming{Brightness: 100}
+	l.Color = &bridgepro.LightColor{}
+	l.Color.XY.X = 0.5
+	l.Color.XY.Y = 0.4
+	l.ColorTemperature = &bridgepro.LightColorTemperature{Mirek: 300}
+	return l
+}
 
-	// When: LightsV1 expects already sorted input (the client provides this);
-	// here we simulate the sorted order aaaa, bbbb.
-	lm := LightsV1([]bridgepro.Light{b, a})
+func TestLightsV1_filtersNonColorAndAssignsStableIDs(t *testing.T) {
+	// Given: a color bulb, a CT-only bulb and an on/off device (unsorted by UUID)
+	color := colorLight("bbbb-2", "Sofa")
+	var ctOnly bridgepro.Light
+	ctOnly.ID = "aaaa-1"
+	ctOnly.Metadata.Name = "Decke"
+	ctOnly.Dimming = &bridgepro.LightDimming{Brightness: 50}
+	ctOnly.ColorTemperature = &bridgepro.LightColorTemperature{Mirek: 300}
+	var plug bridgepro.Light
+	plug.ID = "cccc-3"
+	plug.Metadata.Name = "Stecker"
 
-	// Then: numeric IDs 1,2 stably point to the UUIDs
-	if lm.V1ToUUID["1"] != "aaaa-1" || lm.V1ToUUID["2"] != "bbbb-2" {
-		t.Fatalf("mapping wrong: %#v", lm.V1ToUUID)
+	// When (caller passes UUID-sorted order: aaaa, bbbb, cccc)
+	lm := LightsV1([]bridgepro.Light{ctOnly, color, plug})
+
+	// Then: only the color bulb is offered, at id 1
+	if len(lm.V1) != 1 || lm.V1ToUUID["1"] != "bbbb-2" {
+		t.Fatalf("expected only the color bulb at id 1, got %#v", lm.V1ToUUID)
 	}
 	light1 := lm.V1["1"].(map[string]any)
-	if light1["name"] != "Decke" {
-		t.Errorf("name = %v", light1["name"])
+	if light1["name"] != "Sofa" || light1["type"] != "Extended color light" {
+		t.Errorf("light1 = %#v", light1)
 	}
 	state1 := light1["state"].(map[string]any)
-	if state1["colormode"] != "ct" || state1["ct"] != 300 {
-		t.Errorf("ct state wrong: %#v", state1)
+	if state1["colormode"] != "xy" || state1["bri"] != 254 {
+		t.Errorf("state wrong: %#v", state1)
 	}
+}
 
-	light2 := lm.V1["2"].(map[string]any)
-	state2 := light2["state"].(map[string]any)
-	if state2["colormode"] != "xy" {
-		t.Errorf("colormode = %v, expected xy", state2["colormode"])
+func TestLightV1_typesByCapability(t *testing.T) {
+	cases := []struct {
+		name               string
+		color, ct, dim     bool
+		wantType           string
+		wantHasBri, wantXY bool
+	}{
+		{"color+ct", true, true, true, "Extended color light", true, true},
+		{"color only", true, false, true, "Color light", true, true},
+		{"ct only", false, true, true, "Color temperature light", true, false},
+		{"dimmable", false, false, true, "Dimmable light", true, false},
+		{"onoff", false, false, false, "On/Off plug-in unit", false, false},
 	}
-	if state2["bri"] != 254 {
-		t.Errorf("bri = %v, expected 254 (100%%)", state2["bri"])
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var l bridgepro.Light
+			l.ID = "uuid-xxxx"
+			l.On.On = true
+			if c.dim {
+				l.Dimming = &bridgepro.LightDimming{Brightness: 100}
+			}
+			if c.color {
+				l.Color = &bridgepro.LightColor{}
+				l.Color.XY.X = 0.4
+			}
+			if c.ct {
+				l.ColorTemperature = &bridgepro.LightColorTemperature{Mirek: 300}
+			}
+			v := lightV1(l)
+			if v["type"] != c.wantType {
+				t.Errorf("type = %v, want %v", v["type"], c.wantType)
+			}
+			state := v["state"].(map[string]any)
+			if _, ok := state["bri"]; ok != c.wantHasBri {
+				t.Errorf("bri present = %v, want %v", ok, c.wantHasBri)
+			}
+			if _, ok := state["xy"]; ok != c.wantXY {
+				t.Errorf("xy present = %v, want %v", ok, c.wantXY)
+			}
+		})
 	}
 }
 
