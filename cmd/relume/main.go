@@ -467,7 +467,7 @@ func autoPairPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, c
 			clip.SetLightProvider(newProvider(client, controlled, log))
 			log.Info("bridge pro paired (auto)", "pro", pro)
 			if lights, lerr := client.Lights(); lerr == nil {
-				log.Info("bridge pro lights available", "count", len(lights))
+				log.Info("bridge pro lights available", "count", len(lights), "color", colorCapable(lights))
 			}
 			return
 		}
@@ -690,11 +690,24 @@ func runSetup(args []string, log *slog.Logger) error {
 		fmt.Printf("Note: lights could not be read: %v\n", lerr)
 		return nil
 	}
-	fmt.Printf("%d lights found:\n", len(lights))
+	fmt.Printf("%d lights found, %d color-capable:\n", len(lights), colorCapable(lights))
 	for _, l := range lights {
 		fmt.Printf("  - %s (%s)\n", l.Metadata.Name, l.ID)
 	}
 	return nil
+}
+
+// colorCapable counts the lights usable for Ambilight: only color-capable bulbs
+// are offered to the TV (translate.LightsV1 filters the rest), so this reports how
+// many of the discovered lights are really available.
+func colorCapable(lights []bridgepro.Light) int {
+	n := 0
+	for _, l := range lights {
+		if l.HasColor() {
+			n++
+		}
+	}
+	return n
 }
 
 func hostname() string {
