@@ -17,6 +17,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/trick77/relume/internal/config"
@@ -93,6 +94,20 @@ type Server struct {
 	streamMu     sync.Mutex
 	streamActive bool
 	streamOwner  string
+
+	// dtlsFallback (sticky) flips entertainment mode back to REST-follow when the TV
+	// confirmed stream activation but never opened the DTLS stream within
+	// dtlsFallbackTimeout. It is a safety net so entertainment mode never leaves the
+	// lights unfollowed on a TV/firmware that does not open the stream. Once set it
+	// stays set for the process lifetime (sticky). Guards: confirmsEntertainment.
+	dtlsFallback        atomic.Bool
+	dtlsFallbackTimeout time.Duration
+	dtlsMu              sync.Mutex
+	dtlsWatchdog        *time.Timer
+	// dtlsStreamUp tracks whether a TV DTLS stream is currently connected, so a
+	// re-activation while the stream is healthy does not arm a watchdog that would
+	// then falsely fall back (no fresh OnStreamStart fires for an already-up stream).
+	dtlsStreamUp atomic.Bool
 	// lastWriteAt is the time of the most recent Ambilight light-state write,
 	// stamped in handleSetLightState (so it is independent of Debug, unlike the
 	// activity counters above). The idle-off monitor reads it via LastActivity.
@@ -117,14 +132,83 @@ type Server struct {
 // is served instantly from the idempotent path.
 const defaultPairAcceptDelay = 5 * time.Second
 
+// defaultDTLSFallbackTimeout is how long relume waits, after confirming the TV's
+// stream activation, for the TV to open its DTLS stream before falling back to
+// REST-follow. The tested TV opens it ~1s after confirmation, so 5s is ample margin.
+const defaultDTLSFallbackTimeout = 5 * time.Second
+
 // New creates the CLIP-v1 server.
 func New(cfg *config.Config, advIP string, httpPort int, log *slog.Logger) *Server {
-	return &Server{cfg: cfg, advIP: advIP, httpPort: httpPort, log: log, lightsTouched: map[string]struct{}{}, pairAcceptDelay: defaultPairAcceptDelay}
+	return &Server{cfg: cfg, advIP: advIP, httpPort: httpPort, log: log,
+		lightsTouched: map[string]struct{}{}, pairAcceptDelay: defaultPairAcceptDelay,
+		dtlsFallbackTimeout: defaultDTLSFallbackTimeout}
 }
 
 // confirmsEntertainment reports whether relume should confirm the TV's stream
-// activation for real: in entertainment mode, or under the diagnostic probe.
-func (s *Server) confirmsEntertainment() bool { return s.EntertainmentMode || s.EntProbe }
+// activation for real: in entertainment mode (unless it has fallen back to REST,
+// see dtlsFallback), or under the diagnostic probe.
+func (s *Server) confirmsEntertainment() bool {
+	return (s.EntertainmentMode || s.EntProbe) && !s.dtlsFallback.Load()
+}
+
+// armDTLSWatchdog starts (or restarts) the fallback timer after relume confirms a
+// stream activation in entertainment mode. If the TV does not open its DTLS stream
+// (MarkDTLSStreamUp) before it fires, relume falls back to REST-follow. No-op under
+// the probe or once already fallen back.
+func (s *Server) armDTLSWatchdog() {
+	if !s.EntertainmentMode || s.dtlsFallback.Load() || s.dtlsStreamUp.Load() {
+		return
+	}
+	s.dtlsMu.Lock()
+	defer s.dtlsMu.Unlock()
+	if s.dtlsWatchdog != nil {
+		s.dtlsWatchdog.Stop()
+	}
+	s.log.Info("entertainment: activation confirmed, awaiting TV DTLS stream on :2100",
+		"fallback_in", s.dtlsFallbackTimeout.String())
+	s.dtlsWatchdog = time.AfterFunc(s.dtlsFallbackTimeout, s.dtlsWatchdogFired)
+}
+
+// disarmDTLSWatchdog cancels a pending fallback timer.
+func (s *Server) disarmDTLSWatchdog() {
+	s.dtlsMu.Lock()
+	defer s.dtlsMu.Unlock()
+	if s.dtlsWatchdog != nil {
+		s.dtlsWatchdog.Stop()
+		s.dtlsWatchdog = nil
+	}
+}
+
+// MarkDTLSStreamUp records that the TV opened its DTLS entertainment stream — it
+// cancels the fallback watchdog. Wired to the entertainment receiver's OnStreamStart.
+func (s *Server) MarkDTLSStreamUp() {
+	s.dtlsStreamUp.Store(true)
+	s.disarmDTLSWatchdog()
+	s.log.Info("entertainment: TV DTLS stream up — entertainment path active")
+}
+
+// MarkDTLSStreamDown records that the TV's DTLS stream closed. Wired to the
+// receiver's OnStreamStop so a later re-activation can arm the watchdog again.
+func (s *Server) MarkDTLSStreamDown() {
+	s.dtlsStreamUp.Store(false)
+}
+
+// dtlsWatchdogFired is invoked when the TV confirmed activation but never opened the
+// DTLS stream in time. It flips relume (stickily) back to REST-follow: subsequent
+// activations get the generic ack and GET /groups/1 reports the stream inactive, so
+// the TV resumes per-light PUTs.
+func (s *Server) dtlsWatchdogFired() {
+	if s.dtlsStreamUp.Load() || s.dtlsFallback.Swap(true) {
+		return // stream came up in the meantime, or already fell back
+	}
+	s.streamMu.Lock()
+	s.streamActive = false
+	s.streamOwner = ""
+	s.streamMu.Unlock()
+	s.log.Warn("entertainment: TV did NOT open the DTLS stream in time — FALLING BACK to REST-follow "+
+		"(re-acking activation as inactive so the TV resumes per-light PUTs)",
+		"timeout", s.dtlsFallbackTimeout.String())
+}
 
 // SetLightProvider registers the source for the light list (Bridge Pro backend).
 // Safe to call at runtime: the backend may be paired asynchronously after the
@@ -779,6 +863,14 @@ func (s *Server) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
 			s.streamMu.Unlock()
 			s.log.Info("ENTERTAINMENT stream activation requested by TV",
 				"group", id, "active", active, "owner", owner)
+			// Arm the fallback watchdog on activation (entertainment mode only): if the
+			// TV confirms here but never opens the DTLS stream, relume reverts to
+			// REST-follow. A deactivation cancels any pending watchdog.
+			if active {
+				s.armDTLSWatchdog()
+			} else {
+				s.disarmDTLSWatchdog()
+			}
 			writeJSON(w, []map[string]any{{"success": map[string]any{
 				"/groups/" + id + "/stream/active": active,
 			}}})

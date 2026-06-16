@@ -272,14 +272,24 @@ func runServe(args []string, log *slog.Logger) error {
 			proClient := bridgepro.New(cfg.Pro)
 			clientKey, _ := hex.DecodeString(cfg.Pro.ClientKey)
 			streamer := entertainment.NewProStreamer(proClient, cfg.Pro.Host, cfg.Pro.AppKey, clientKey, clip.ForwardLight, log)
-			recv.OnStreamStart = streamer.Start
-			recv.OnStreamStop = streamer.Stop
+			// The TV opening its DTLS stream cancels the activation-fallback watchdog
+			// (clip) and establishes the Pro stream (streamer).
+			recv.OnStreamStart = func(remote string) {
+				clip.MarkDTLSStreamUp()
+				streamer.Start(remote)
+			}
+			recv.OnStreamStop = func(remote string) {
+				clip.MarkDTLSStreamDown()
+				streamer.Stop(remote)
+			}
 			recv.OnFrame = streamer.Push
 			log.Info("entertainment mode: DTLS receiver on udp :2100 → streaming to the Pro over DTLS (REST fallback)")
 		} else {
 			// No Pro paired yet: forward decoded frames to the Pro via the coalescing
 			// REST provider (Phase B) until pairing completes. The channel id IS the v1
 			// light id the TV referenced in its entertainment group.
+			recv.OnStreamStart = func(string) { clip.MarkDTLSStreamUp() }
+			recv.OnStreamStop = func(string) { clip.MarkDTLSStreamDown() }
 			recv.OnFrame = func(_ string, f *huestream.Frame) {
 				for _, ch := range f.Channels {
 					clip.ForwardLight(strconv.Itoa(int(ch.ID)), entertainment.ToHueV1State(f.ColorSpace, ch))

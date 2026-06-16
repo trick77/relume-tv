@@ -792,6 +792,78 @@ func TestStreamActivation_withoutProbe_keepsLegacyAck(t *testing.T) {
 	}
 }
 
+func TestStreamActivation_entertainmentMode_fallsBackToRESTOnDTLSTimeout(t *testing.T) {
+	// Given: entertainment mode with a short DTLS watchdog and a paired TV
+	s, ts := newTestServer(t)
+	s.EntertainmentMode = true
+	s.dtlsFallbackTimeout = 30 * time.Millisecond
+	resp := mustPostUA(t, ts.URL+"/api", `{"devicetype":"Philips_TV#Ambilight","generateclientkey":true}`, tvUserAgent)
+	defer resp.Body.Close()
+	var paired []map[string]map[string]string
+	json.NewDecoder(resp.Body).Decode(&paired)
+	username := paired[0]["success"]["username"]
+
+	// When: the TV activates the stream — relume confirms it for real (arms the watchdog)
+	actResp := mustPut(t, ts.URL+"/api/"+username+"/groups/1", `{"stream":{"active":true}}`)
+	var act []map[string]map[string]any
+	json.NewDecoder(actResp.Body).Decode(&act)
+	actResp.Body.Close()
+	if got := act[0]["success"]["/groups/1/stream/active"]; got != true {
+		t.Fatalf("first activation should be confirmed, got %v", act)
+	}
+
+	// And: the TV never opens the DTLS stream → the watchdog fires
+	time.Sleep(120 * time.Millisecond)
+
+	// Then: relume has fallen back to REST — a further activation gets the generic ack
+	actResp2 := mustPut(t, ts.URL+"/api/"+username+"/groups/1", `{"stream":{"active":true}}`)
+	var act2 []map[string]map[string]any
+	json.NewDecoder(actResp2.Body).Decode(&act2)
+	actResp2.Body.Close()
+	if got := act2[0]["success"]["/groups/1"]; got != "ok" {
+		t.Fatalf("after fallback the activation should get the legacy REST ack, got %v", act2)
+	}
+
+	// And: GET /groups/1 reflects the stream as inactive
+	groupResp := mustGet(t, ts.URL+"/api/"+username+"/groups/1")
+	defer groupResp.Body.Close()
+	var group map[string]any
+	json.NewDecoder(groupResp.Body).Decode(&group)
+	if group["stream"].(map[string]any)["active"] != false {
+		t.Fatalf("stream should be inactive after fallback: %v", group["stream"])
+	}
+}
+
+func TestStreamActivation_entertainmentMode_dtlsUpCancelsWatchdog(t *testing.T) {
+	// Given: entertainment mode with a watchdog and a paired TV
+	s, ts := newTestServer(t)
+	s.EntertainmentMode = true
+	s.dtlsFallbackTimeout = 80 * time.Millisecond
+	resp := mustPostUA(t, ts.URL+"/api", `{"devicetype":"Philips_TV#Ambilight","generateclientkey":true}`, tvUserAgent)
+	defer resp.Body.Close()
+	var paired []map[string]map[string]string
+	json.NewDecoder(resp.Body).Decode(&paired)
+	username := paired[0]["success"]["username"]
+
+	// When: the TV activates the stream, opens its DTLS stream before the timeout, then
+	// re-activates while the stream is healthy (must not arm a watchdog that falsely fires)
+	actResp := mustPut(t, ts.URL+"/api/"+username+"/groups/1", `{"stream":{"active":true}}`)
+	actResp.Body.Close()
+	s.MarkDTLSStreamUp()
+	reAct := mustPut(t, ts.URL+"/api/"+username+"/groups/1", `{"stream":{"active":true}}`)
+	reAct.Body.Close()
+	time.Sleep(140 * time.Millisecond)
+
+	// Then: no fallback — a further activation is still confirmed for real
+	actResp2 := mustPut(t, ts.URL+"/api/"+username+"/groups/1", `{"stream":{"active":true}}`)
+	var act2 []map[string]map[string]any
+	json.NewDecoder(actResp2.Body).Decode(&act2)
+	actResp2.Body.Close()
+	if got := act2[0]["success"]["/groups/1/stream/active"]; got != true {
+		t.Fatalf("DTLS up → activation must stay confirmed (no false fallback), got %v", act2)
+	}
+}
+
 func TestStreamActiveFromBody(t *testing.T) {
 	cases := []struct {
 		body         string

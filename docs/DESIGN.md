@@ -93,9 +93,18 @@ bottleneck:
    key). Each decoded TV frame is re-encoded as a HueStream v2 frame and streamed at ~50 Hz.
    The TV's v1 light id is mapped to the Pro's channel id using the bridge-assigned channels read
    back from the configuration (ground truth, not an assumed order).
-3. **Fallback.** If the configuration, the stream start, or the DTLS handshake fails, relume
-   automatically falls back to the REST forward so the lights still follow (capped). DTLS and
-   REST are mutually exclusive at runtime — never both.
+3. **Pro-side fallback (relume→Pro).** If the configuration, the stream start, or the DTLS
+   handshake *to the Pro* fails, relume automatically falls back to the REST forward so the lights
+   still follow (capped). DTLS and REST are mutually exclusive at runtime — never both.
+4. **TV-side fallback (TV→relume).** Confirming activation commits the TV to DTLS — it stops
+   sending per-light REST PUTs. So if the TV confirms but never opens its DTLS stream, there would
+   be no light control at all. A watchdog guards this: when relume confirms an activation it waits
+   5s for the TV's DTLS stream; if none arrives it **stickily** reverts to REST-follow (stops
+   confirming activations and reports the group stream inactive), so the TV resumes PUTs. This is
+   a safety net for TVs/firmwares that don't open the stream. It does **not** cover a relume
+   restart mid-session (the TV then sends nothing to fall back to — see
+   [TROUBLESHOOTING.md](TROUBLESHOOTING.md)). The fallback is logged unambiguously:
+   `entertainment: TV did NOT open the DTLS stream in time — FALLING BACK to REST-follow`.
 
 A relume restart in the middle of a session orphans the TV's stream; the TV then only polls
 light state and the lights go idle. Toggling Ambilight (not Ambilight+Hue) off and on on the TV
