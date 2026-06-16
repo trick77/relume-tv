@@ -65,7 +65,22 @@ The Bridge Pro breaks the Ambilight+Hue path in three ways:
     `forwarding lights to bridge pro failing ... 503 command queue is full` with
     `coalesced_frames` piling up. Empirical proof that per-light REST cannot sustain
     the 25fps stream → Phase C is mandatory, not optional.
-  - Phase C ⏳ NEXT. relume opens its OWN Entertainment stream TO the Pro over DTLS,
+  - Phase C ✅ implemented (pending real-Pro verification). relume opens its OWN
+    Entertainment stream TO the Pro over DTLS, replacing the REST forward when up:
+    `huestream.Encode` (v1/v2, round-trip tested); `bridgepro` entertainment calls
+    (`EntertainmentServices`/`CreateEntertainmentConfig`/`GetEntertainmentConfig`/
+    `StartStream`/`StopStream` + `post` helper); `entertainment.ProStreamer` (DTLS-PSK
+    client via pion/dtls `DialWithOptions`, ensure+start a `relume` config, steady
+    50Hz send loop, ground-truth TV-v1-id→Pro-channel-id remap from the read-back
+    config, auto-fallback to the REST sink, mutually exclusive). Receiver gained
+    `OnStreamStart`/`OnStreamStop` so the Pro area lives exactly as long as the TV
+    stream. Wired in `main.go` (entertainment mode, Pro paired). Verified by unit +
+    DTLS-loopback tests. `defaultPairAcceptDelay` 10s→5s. Also fixed: the xy colour
+    was dropped on the REST path (`[]float64` vs `[]any`) — merged separately (#43).
+    STILL TO VERIFY on the real Pro: exact `entertainment_configuration` POST shape
+    (channels/locations/stream_proxy/positions), HueStream v2 vs v1 acceptance, and
+    the keepalive interval that prevents the area auto-stopping.
+  - (historic) Phase C original plan. relume opens its OWN Entertainment stream TO the Pro over DTLS,
     replacing the REST forward in entertainment mode. Design:
     `docs/superpowers/specs/2026-06-15-m4-phase-c-dtls-to-pro-design.md`. Approved
     approach: 1A (relume owns the entertainment_configuration) + 2A (auto-fallback to
