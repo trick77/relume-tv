@@ -157,6 +157,23 @@ docker compose run --rm relume avahi-service -config /data/relume.json > /etc/av
 ```
 Alternatively disable `avahi-daemon`, then relume's own announcer works.
 
+### Entertainment stream: re-trigger after a relume restart
+In `-mode entertainment` the TV — not relume — opens the DTLS stream, and only after
+relume confirms its stream activation. Restarting the relume container mid-session orphans
+that session: the TV does not notice the new instance and falls back to polling
+`GET /api/{user}/lights/1` every few seconds without re-creating the entertainment group,
+so the lights go idle (the idle-off monitor turns them off after `-idle-off-timeout`).
+
+To make the TV reconnect, **toggle Ambilight off and on again on the TV** (the Ambilight
+feature itself — *not* Ambilight+Hue). The TV then re-runs the activation handshake. You
+can confirm recovery in the log:
+```
+ENTERTAINMENT group create requested by TV ...
+ENTERTAINMENT stream activation requested by TV ... active=true
+entertainment stream connected from=<tv-ip>:...
+```
+Once `entertainment stream connected` appears, decoded frames are forwarded to the Pro again.
+
 ### Cloud suppression
 If a real Hue bridge is registered at `discovery.meethue.com`, the TV may resolve it via
 the cloud and **skip local discovery** (diyHue #988). Disconnect or block the original
