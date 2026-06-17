@@ -44,16 +44,16 @@ identity, pairing, and the two control modes.
 ## Quick start (Docker)
 
 ```bash
-# 1. Pair with the real Bridge Pro (once). When prompted, briefly TAP the link
-#    button on the Bridge Pro (do not hold it). Add -bridge-ip <ip> if cloud
-#    discovery finds nothing.
-docker compose run --rm relume setup -config /data/relume.json
-
-# 2. Start the service
+# 1. Start the service. On first run relume auto-pairs with the Bridge Pro in the
+#    background — just briefly TAP the link button on the Pro (do not hold it).
 docker compose up -d
 
-# 3. On the TV, start the Ambilight+Hue bridge search and select relume.
+# 2. On the TV, start the Ambilight+Hue bridge search and select relume.
 #    relume auto-accepts the TV's pairing — no button to press on relume's side.
+
+# Optional: pair up front and verify before serving. Add -bridge-ip <ip> if cloud
+# discovery finds nothing.
+docker compose run --rm relume setup
 ```
 
 The image is pulled from `ghcr.io/trick77/relume` (built by the release workflow).
