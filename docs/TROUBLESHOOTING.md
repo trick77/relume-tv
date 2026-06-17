@@ -30,7 +30,7 @@ network; the clean local-discovery state is `[]`.
 If the host runs an `avahi-daemon` (it owns UDP 5353), relume's built-in mDNS announcer cannot
 bind the port. Either let avahi announce instead:
 ```bash
-docker compose run --rm relume avahi-service -config /data/relume.json > /etc/avahi/services/relume-hue.service
+docker compose run --rm relume avahi-service > /etc/avahi/services/relume-hue.service
 # match the port to the serve http-port: relume avahi-service -http-port 80
 ```
 or disable `avahi-daemon`, then relume's own announcer works.

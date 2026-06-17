@@ -15,5 +15,6 @@ COPY --from=build /relume /usr/local/bin/relume
 VOLUME /data
 WORKDIR /data
 # Standard: serve. setup/link/discover via `docker compose run` aufrufen.
+# WORKDIR=/data, daher landet die Default-Config (relume.json) bereits im Volume.
 ENTRYPOINT ["relume"]
-CMD ["serve", "-config", "/data/relume.json"]
+CMD ["serve"]

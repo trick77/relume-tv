@@ -19,7 +19,9 @@ services:
     # switch to a high port (e.g. -http-port 8080), see README.
     # The Bridge Pro is paired automatically in the background on first run — just
     # TAP the Pro's physical link button. The TV pairs itself (auto-pair).
-    command: ["serve", "-config", "/data/relume.json"]
+    # Config defaults to relume.json; the image's WORKDIR is /data, so it lands
+    # in the named volume above.
+    command: ["serve"]
 
 volumes:
   relume-data:

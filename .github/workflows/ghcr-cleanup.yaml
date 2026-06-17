@@ -1,0 +1,27 @@
+name: Cleanup GHCR
+
+# Prune old container images from GHCR, keeping the 10 most recent tagged
+# releases plus their multi-arch child manifests. Untagged orphans (old buildx
+# layers, attestations) are removed too.
+on:
+  schedule:
+    - cron: "0 4 * * 0" # weekly, Sundays 04:00 UTC
+  workflow_dispatch:
+
+permissions:
+  packages: write
+
+concurrency:
+  group: ghcr-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      # Manifest-list aware: keeping a tagged image keeps its arch children, so
+      # multi-arch (amd64/arm64) pulls of retained tags stay intact.
+      - uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          keep-n-tagged: 10
+          delete-untagged: true
