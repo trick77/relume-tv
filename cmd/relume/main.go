@@ -134,6 +134,13 @@ func runServe(args []string, log *slog.Logger) error {
 		return err
 	}
 
+	// Snapshot the paired Pro once, under the config mutex, before launching any
+	// goroutine that can re-pair (autoPairPro) or reconnect (watchPro) it. SetPro
+	// replaces the pointer rather than mutating in place, so this snapshot stays a
+	// consistent, immutable view for all the startup wiring below; reads after
+	// startup go through cfg.GetPro().
+	pro := cfg.GetPro()
+
 	ip := opts.advertiseIP
 	if ip == "" {
 		ip, err = outboundIP()
@@ -148,7 +155,7 @@ func runServe(args []string, log *slog.Logger) error {
 	// re-pairing — POST /api then returns the stored user without the 5s delay.
 	log.Info("saved config",
 		"path", opts.configPath,
-		"pro", cfg.Pro, // LogValue → name/id/host, or <none> when unpaired
+		"pro", pro, // LogValue → name/id/host, or <none> when unpaired
 		"tv_paired", len(cfg.PairedDeviceTypes()),
 		"tv_devicetypes", cfg.PairedDeviceTypes(),
 	)
@@ -183,10 +190,10 @@ func runServe(args []string, log *slog.Logger) error {
 	controlled := bridge.NewControlledSet(window)
 	clip.ControlledLights = controlled.Current
 
-	if cfg.Pro != nil {
-		client := bridgepro.New(cfg.Pro)
+	if pro != nil {
+		client := bridgepro.New(pro)
 		clip.SetLightProvider(newProvider(client, controlled, log))
-		log.Info("bridge pro paired", "pro", cfg.Pro)
+		log.Info("bridge pro paired", "pro", pro)
 	}
 	var responder *ssdp.Responder
 	if opts.disableSSDP {
@@ -207,7 +214,7 @@ func runServe(args []string, log *slog.Logger) error {
 	// Pair the Bridge Pro backend in the background, independently of the TV: the
 	// TV can discover/pair relume before the Pro is paired; relume just returns an
 	// empty light list until the Pro pairing completes, then hot-loads the lights.
-	if cfg.Pro == nil {
+	if pro == nil {
 		log.Warn("no bridge pro paired yet – auto-pairing in background; TAP the Bridge Pro link button")
 		go autoPairPro(ctx, cfg, clip, controlled, opts.bridgeIP, opts.skipTLS, log)
 	} else {
@@ -242,14 +249,14 @@ func runServe(args []string, log *slog.Logger) error {
 		// lights off mid-stream (the TV streams via DTLS, not REST writes, here).
 		recv.OnActivity = clip.MarkActivity
 
-		if cfg.Pro != nil {
+		if pro != nil {
 			// Phase C: relume opens its OWN entertainment stream to the Pro over DTLS
 			// and re-encodes the decoded TV frames at full rate, avoiding the per-light
 			// REST writes that overflow the Pro's command queue (503). The streamer
 			// auto-falls back to the REST forward (Phase B) if DTLS cannot establish.
-			proClient := bridgepro.New(cfg.Pro)
-			clientKey, _ := hex.DecodeString(cfg.Pro.ClientKey)
-			streamer := entertainment.NewProStreamer(proClient, cfg.Pro.Host, cfg.Pro.AppKey, clientKey, clip.ForwardLight, log)
+			proClient := bridgepro.New(pro)
+			clientKey, _ := hex.DecodeString(pro.ClientKey)
+			streamer := entertainment.NewProStreamer(proClient, pro.Host, pro.AppKey, clientKey, clip.ForwardLight, log)
 			// Persist/reuse relume's own entertainment_configuration across restarts
 			// instead of re-finding it each stream (Phase D).
 			streamer.SetConfigStore(cfg.LoadEntConfigID, func(id string) {
@@ -350,10 +357,35 @@ func runServe(args []string, log *slog.Logger) error {
 	// cancelled ctx) and never leaks past process exit (Phase D).
 	stopEntertainment(entStreamer)
 	// Stop accepting TV writes first (above), then signal the restart on the lights.
-	if cfg.Pro != nil {
-		bridge.FlashRestart(bridgepro.New(cfg.Pro), log, controlled.Current())
+	// GetPro reads the current pairing under the mutex (watchPro may have reconnected
+	// it to a new IP since startup).
+	if shutPro := cfg.GetPro(); shutPro != nil {
+		flashRestartBounded(bridgepro.New(shutPro), log, controlled.Current(), shutdownFlashBudget)
 	}
 	return nil
+}
+
+// shutdownFlashBudget caps the total time the restart flash may take on shutdown.
+// FlashRestart runs synchronously and each light write blocks on the Bridge Pro's
+// HTTP timeout; if the Pro is unreachable at shutdown, an unbounded flash would
+// stall well past the container stop grace (then get SIGKILLed). This bounds it so
+// the process exits promptly.
+const shutdownFlashBudget = 3 * time.Second
+
+// flashRestartBounded runs the restart flash with a hard total deadline: it returns
+// after the flash completes or after max elapses (whichever first). On timeout the
+// flash goroutine is abandoned — the process is exiting anyway.
+func flashRestartBounded(client *bridgepro.Client, log *slog.Logger, ids []string, max time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		bridge.FlashRestart(client, log, ids)
+	}()
+	select {
+	case <-done:
+	case <-time.After(max):
+		log.Warn("restart flash timed out (Bridge Pro unreachable?) — exiting anyway", "after", max.String())
+	}
 }
 
 // stopEntertainment tears down the Pro entertainment stream on shutdown (idempotent
@@ -502,17 +534,22 @@ func autoPairPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, c
 // across reboots and DHCP IP changes.
 func watchPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, controlled *bridge.ControlledSet, bridgeIP string, skipTLS bool, log *slog.Logger) {
 	const checkInterval = 60 * time.Second
-	pro := cfg.Pro
+	pro := cfg.GetPro()
 	if pro == nil {
 		return
 	}
 	// Backfill the Pro's name/id for installs paired before they were captured, so
-	// logs can reference it. Best-effort and only while the Pro is reachable.
+	// logs can reference it. Best-effort and only while the Pro is reachable. Build a
+	// fresh *BridgePro and SetPro it rather than mutating the snapshot in place —
+	// GetPro promises an immutable view to concurrent readers (monitorIdle, shutdown).
 	if pro.Name == "" && pro.BridgeID == "" {
 		if name, id, ierr := bridgepro.New(pro).BridgeInfo(); ierr == nil && (name != "" || id != "") {
-			pro.Name, pro.BridgeID = name, id
-			if serr := cfg.SetPro(pro); serr != nil {
+			updated := *pro
+			updated.Name, updated.BridgeID = name, id
+			if serr := cfg.SetPro(&updated); serr != nil {
 				log.Warn("persisting hue bridge pro name/id", "err", serr)
+			} else {
+				pro = &updated
 			}
 		}
 	}
