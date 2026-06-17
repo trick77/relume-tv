@@ -33,7 +33,6 @@ How it works (identity, pairing, the two control modes): see [docs/DESIGN.md](do
   (no client/AP isolation between them).
 - **TCP port 80 free on the host** — Relume emulates a gen-2 bridge, which speaks on `:80`.
   Pick another with `-http-port`; under rootless Docker see the [port-80 note](#rootless-docker-and-port-80).
-- *(Only when building from source)* **Go 1.26+**.
 
 ## Quick start (Docker)
 
