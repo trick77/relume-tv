@@ -27,9 +27,12 @@ identity, pairing, and the two control modes.
 
 ## Requirements
 
-- **A Philips Ambilight TV** with the built-in Ambilight+Hue feature — the TV is what
-  discovers and drives the bridge. (Developed and tested against a **Philips 65OLED806**,
-  Android TV 11; other Ambilight models may behave differently.)
+- **A Philips Ambilight TV** with the built-in **Ambilight+Hue** feature (the older
+  integration, roughly pre-2023 models) — the TV is what discovers and drives the bridge.
+  Developed and tested against a **Philips 65OLED806**, Android TV 11; other Ambilight models
+  may behave differently. **Note:** 2025/2026 TVs ship the new **AmbiScape** feature instead,
+  which talks to bulbs directly over Matter and bypasses the Hue Bridge entirely — those TVs
+  neither need nor work with Relume.
 - **A Hue Bridge Pro (BSB003)**, already set up with your lights and reachable on the LAN.
 - **A Linux host** to run Relume on. Discovery uses multicast (mDNS/SSDP), so the container
   needs `network_mode: host` — **Docker Desktop on macOS/Windows won't work**, its
