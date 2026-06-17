@@ -57,8 +57,9 @@ type ProStreamer struct {
 
 	// port overrides the Pro DTLS port (default 2100); for tests.
 	port int
-	// dial is the DTLS dialer seam (default dialPro); for tests.
-	dial func(host string, port int, identity string, psk []byte) (net.Conn, error)
+	// dial is the DTLS dialer seam (default dialPro); for tests. The ctx is the run
+	// ctx so a Stop cancels an in-flight handshake (not just the 10s cap).
+	dial func(ctx context.Context, host string, port int, identity string, psk []byte) (net.Conn, error)
 
 	// loadCfgID / saveCfgID persist the resolved relume config id across restarts
 	// (Phase D). Optional; nil keeps the streamer purely in-memory. Wired in main.go
@@ -69,6 +70,10 @@ type ProStreamer struct {
 	mu      sync.Mutex
 	cancel  context.CancelFunc
 	running bool
+	// done is closed by the run goroutine when it returns; Stop waits on it after
+	// cancelling so Start/Stop are strictly serial (the old run has fully exited
+	// before teardown). nil when no run goroutine is live (Start returned early).
+	done chan struct{}
 
 	st state
 }
@@ -95,8 +100,9 @@ type state struct {
 	path       string // "dtls" | "rest"
 	// cachedConfigID is the relume config id resolved earlier this process, so repeat
 	// establish calls (stream re-connects, backoff retries) skip the list+match
-	// round-trips. Guarded by st.mu: a Stop does not join the run goroutine, so an
-	// in-flight ensureConfig from an old run can race a new one's establish.
+	// round-trips. Guarded by st.mu: cheap and still correct now that Stop joins the
+	// run goroutine (only one run touches it at a time) — the guard also covers the
+	// Path/Push readers on other goroutines.
 	cachedConfigID string
 }
 
@@ -106,7 +112,8 @@ type state struct {
 func NewProStreamer(pro ProClient, host, appKey string, clientKey []byte, fallback FallbackSink, log *slog.Logger) *ProStreamer {
 	return &ProStreamer{
 		pro: pro, host: host, appKey: appKey, clientKey: clientKey,
-		fallback: fallback, log: log, dial: dialPro,
+		fallback: fallback, log: log,
+		dial: dialPro,
 	}
 }
 
@@ -136,22 +143,40 @@ func (s *ProStreamer) Start(remote string) {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 	s.cancel = cancel
+	s.done = done
 	s.running = true
 	s.log.Info("pro entertainment: TV stream started, establishing DTLS path", "tv", remote)
-	go s.run(ctx)
+	go s.run(ctx, done)
 }
 
 // Stop tears down the Pro stream when the TV disconnects: best-effort StopStream so
-// the Pro area never stays active, then closes the DTLS connection.
+// the Pro area never stays active, then closes the DTLS connection. It cancels the
+// run goroutine and WAITS for it to exit before tearing down, so Start/Stop are
+// strictly serial — the old run can no longer race a new one over s.st.
+//
+// This seriality assumes the caller invokes Start and Stop sequentially from a
+// single goroutine — which the entertainment receiver does (OnStreamStart/OnStreamStop
+// fire from its one read loop). Concurrent Start/Stop calls are NOT supported: an
+// old Stop's teardown could disassemble the s.st of a just-started run.
 func (s *ProStreamer) Stop(remote string) {
 	s.mu.Lock()
 	cancel := s.cancel
+	done := s.done
 	s.running = false
 	s.cancel = nil
+	s.done = nil
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	// Join the run goroutine before teardown so it cannot overwrite s.st (conn/path)
+	// after Stop has torn it down. Do NOT hold s.mu here — run uses s.st.mu, but a
+	// goroutine join must never block on the Stop mutex. done is nil when Start
+	// returned early (no clientKey → no run goroutine).
+	if done != nil {
+		<-done
 	}
 	s.teardown()
 	s.log.Info("pro entertainment: TV stream stopped, torn down Pro path", "tv", remote)
@@ -190,7 +215,8 @@ func (s *ProStreamer) Push(_ string, f *huestream.Frame) {
 
 // run establishes the DTLS path (retrying on a backoff while the TV stays
 // connected) and runs the steady-rate send loop.
-func (s *ProStreamer) run(ctx context.Context) {
+func (s *ProStreamer) run(ctx context.Context, done chan struct{}) {
+	defer close(done)
 	backoff := time.Second
 	for ctx.Err() == nil {
 		if err := s.establish(ctx); err != nil {
@@ -238,7 +264,7 @@ func (s *ProStreamer) establish(ctx context.Context) error {
 		port = 2100
 	}
 	s.log.Info("pro DTLS stream connecting", "host", fmt.Sprintf("%s:%d", s.host, port), "identity", s.appKey)
-	conn, err := s.dial(s.host, port, s.appKey, s.clientKey)
+	conn, err := s.dial(ctx, s.host, port, s.appKey, s.clientKey)
 	if err != nil {
 		_ = s.pro.StopStream(configID)
 		return fmt.Errorf("dtls dial: %w", err)
@@ -500,9 +526,10 @@ func (s *ProStreamer) ensureConfig() (id string, remap map[uint16]uint8, reused 
 	return id, remap, false, len(remap), nil
 }
 
-// cachedID / setCachedID guard the in-process resolved config id under st.mu (a Stop
-// does not join the run goroutine, so an old run's in-flight ensureConfig can race a
-// new run's establish).
+// cachedID / setCachedID guard the in-process resolved config id under st.mu. Stop
+// now joins the run goroutine, so only one run touches it at a time (the old
+// old-run-vs-new-run race is gone); the guard is kept as it is cheap and still
+// orders these writes against the Path/Push readers on other goroutines.
 func (s *ProStreamer) cachedID() string {
 	s.st.mu.Lock()
 	defer s.st.mu.Unlock()
@@ -576,7 +603,7 @@ func position(i int) float64 {
 // dialPro opens a DTLS-PSK client connection to the Pro's entertainment endpoint,
 // mirroring the receiver's server options (identity = the Pro application key, PSK
 // = the Pro clientkey, TLS_PSK_WITH_AES_128_GCM_SHA256, no extended master secret).
-func dialPro(host string, port int, identity string, psk []byte) (net.Conn, error) {
+func dialPro(ctx context.Context, host string, port int, identity string, psk []byte) (net.Conn, error) {
 	raddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return nil, fmt.Errorf("resolve %s:%d: %w", host, port, err)
@@ -590,7 +617,8 @@ func dialPro(host string, port int, identity string, psk []byte) (net.Conn, erro
 	if err != nil {
 		return nil, err
 	}
-	hctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Honour BOTH the run ctx (so a Stop cancels an in-flight handshake) and a 10s cap.
+	hctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := conn.HandshakeContext(hctx); err != nil {
 		_ = conn.Close()

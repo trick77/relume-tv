@@ -7,12 +7,37 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/trick77/relume/internal/bridgepro"
 	"github.com/trick77/relume/internal/huestream"
 )
+
+// fakeConn is a non-blocking net.Conn for the streamer tests: Write succeeds
+// immediately (unlike net.Pipe, which is synchronous and would block sendLoop with
+// no reader). closes counts how many times Close was called so a test can assert the
+// orphaned DTLS conn was actually torn down.
+type fakeConn struct {
+	closes  atomic.Int32
+	onClose func()
+}
+
+func (c *fakeConn) Read(b []byte) (int, error)  { return 0, io.EOF }
+func (c *fakeConn) Write(b []byte) (int, error) { return len(b), nil }
+func (c *fakeConn) Close() error {
+	c.closes.Add(1)
+	if c.onClose != nil {
+		c.onClose()
+	}
+	return nil
+}
+func (c *fakeConn) LocalAddr() net.Addr              { return &net.UDPAddr{} }
+func (c *fakeConn) RemoteAddr() net.Addr             { return &net.UDPAddr{} }
+func (c *fakeConn) SetDeadline(time.Time) error      { return nil }
+func (c *fakeConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *fakeConn) SetWriteDeadline(time.Time) error { return nil }
 
 // stubPro is an in-memory ProClient for the streamer tests.
 type stubPro struct {
@@ -296,7 +321,7 @@ func TestProStreamer_establishStopsLeftoverActiveConfig(t *testing.T) {
 
 	called := make(chan net.Conn, 1)
 	s := quietStreamer(pro, nil)
-	s.dial = func(string, int, string, []byte) (net.Conn, error) {
+	s.dial = func(context.Context, string, int, string, []byte) (net.Conn, error) {
 		c1, c2 := net.Pipe()
 		_ = c2
 		called <- c1
@@ -359,6 +384,106 @@ func TestProStreamer_noClientKeyStaysREST(t *testing.T) {
 	}
 }
 
+// TestProStreamer_reconnectStress hammers Start→Push→Stop in a tight loop (the fast
+// TV-reconnect pattern) and proves PROBLEM 1: an old run must not write s.st.conn
+// after Stop tore it down, orphaning a DTLS conn that nothing closes.
+//
+// The fake dial blocks on the run ctx and only then returns a LIVE conn — modelling
+// a handshake that completes right as Stop fires, so establish writes s.st.conn late
+// (the H1 window). Each iteration joins on done after Stop, so:
+//   - with the join: Stop already waited; teardown ran after run exited → conn closed
+//     → live==0; the extra join returns instantly.
+//   - without the join: Stop returns early, our join then waits for the late
+//     successful write + run exit, exposing the orphaned (never-closed) conn → live>0.
+//
+// live counts open fake conns deterministically (no -race needed: H1 is a logical
+// leak, not a data race; the conn counter is the detector). -race additionally
+// polices the new s.done field.
+func TestProStreamer_reconnectStress(t *testing.T) {
+	pro := oneLightPro()
+	var live atomic.Int32 // open fake conns; must be 0 once each run has exited
+	s := quietStreamer(pro, nil)
+	s.dial = func(ctx context.Context, _ string, _ int, _ string, _ []byte) (net.Conn, error) {
+		c := &fakeConn{onClose: func() { live.Add(-1) }}
+		<-ctx.Done() // complete the "handshake" exactly when Stop cancels
+		live.Add(1)
+		return c, nil // a late SUCCESSFUL conn — establish writes it into s.st
+	}
+
+	for i := 0; i < 100; i++ {
+		s.Start("tv")
+		s.Push("tv", &huestream.Frame{
+			ColorSpace: huestream.ColorSpaceXY,
+			Channels:   []huestream.Channel{{ID: 1, A: 0x4000, B: 0x6000, C: 0x8000}},
+		})
+		s.mu.Lock()
+		done := s.done
+		s.mu.Unlock()
+		s.Stop("tv")
+		if done != nil {
+			<-done // synchronize on the run goroutine's actual exit
+		}
+		if n := live.Load(); n != 0 {
+			t.Fatalf("iteration %d: %d conn(s) left open after run exited — orphaned by a late establish write (PROBLEM 1)", i, n)
+		}
+	}
+
+	// After the final Stop joined run + tore down: idle, no live conn on s.st.
+	s.st.mu.Lock()
+	conn := s.st.conn
+	path := s.st.path
+	s.st.mu.Unlock()
+	if conn != nil {
+		t.Fatalf("s.st.conn = %v, want nil after final Stop", conn)
+	}
+	if path != "rest" {
+		t.Fatalf("s.st.path = %q, want rest after final Stop", path)
+	}
+	if s.Path() != "rest" {
+		t.Fatalf("Path() = %q, want rest", s.Path())
+	}
+}
+
+// TestProStreamer_stopCancelsInFlightDial proves PROBLEM 2: a Stop during the DTLS
+// handshake cancels the in-flight dial via the run ctx and returns promptly (it does
+// not block on the 10s cap), and the run goroutine has fully exited (done closed).
+func TestProStreamer_stopCancelsInFlightDial(t *testing.T) {
+	pro := oneLightPro()
+	dialing := make(chan struct{})
+	s := quietStreamer(pro, nil)
+	s.dial = func(ctx context.Context, _ string, _ int, _ string, _ []byte) (net.Conn, error) {
+		close(dialing)
+		<-ctx.Done() // block until the run ctx is cancelled by Stop
+		return nil, ctx.Err()
+	}
+
+	s.Start("tv")
+	<-dialing // ensure the dial is in flight
+
+	// Capture done so we can assert the run goroutine fully exited after Stop.
+	s.mu.Lock()
+	done := s.done
+	s.mu.Unlock()
+	if done == nil {
+		t.Fatal("expected a live run goroutine (done != nil) while dialing")
+	}
+
+	stopReturned := make(chan struct{})
+	go func() { s.Stop("tv"); close(stopReturned) }()
+
+	select {
+	case <-stopReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop hung — in-flight dial was not cancelled by the run ctx")
+	}
+
+	select {
+	case <-done:
+	default:
+		t.Fatal("run goroutine did not exit (done not closed) after Stop returned")
+	}
+}
+
 // TestProStreamer_dtlsLoopback drives the full Phase C path against a real DTLS
 // Receiver standing in for the Pro: Start → ensure config → start stream → dial DTLS
 // → send loop. A pushed TV frame for v1 light 1 must arrive re-encoded as a v2 frame
@@ -388,7 +513,7 @@ func TestProStreamer_dtlsLoopback(t *testing.T) {
 	// Wait until the receiver accepts a DTLS-PSK client.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		c, err := dialPro("127.0.0.1", port, appKey, clientKey)
+		c, err := dialPro(context.Background(), "127.0.0.1", port, appKey, clientKey)
 		if err == nil {
 			_ = c.Close()
 			break

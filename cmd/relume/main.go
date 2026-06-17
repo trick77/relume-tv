@@ -70,25 +70,20 @@ func main() {
 }
 
 type serveOptions struct {
-	configPath               string
-	httpPort                 int
-	advertiseIP              string
-	debug                    bool
-	tvIP                     string
-	discoveryBurstDuration   time.Duration
-	discoveryBurstInterval   time.Duration
-	identityProfile          string
-	descriptionProfile       string
-	ssdpMediaServerAlias     bool
-	ssdpMediaServerBasicBody bool
-	ssdpDescriptorVariants   bool
-	disableSSDP              bool
-	bridgeIP                 string
-	skipTLS                  bool
-	idleOffTimeout           time.Duration
-	controlledLightWindow    time.Duration
-	mode                     string
-	dtlsFallbackTimeout      time.Duration
+	configPath             string
+	httpPort               int
+	advertiseIP            string
+	debug                  bool
+	tvIP                   string
+	discoveryBurstDuration time.Duration
+	discoveryBurstInterval time.Duration
+	disableSSDP            bool
+	bridgeIP               string
+	skipTLS                bool
+	idleOffTimeout         time.Duration
+	controlledLightWindow  time.Duration
+	mode                   string
+	dtlsFallbackTimeout    time.Duration
 }
 
 func parseServeOptions(args []string) (serveOptions, error) {
@@ -100,11 +95,6 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	tvIP := fs.String("tv-ip", "", "TV IP to log all mDNS questions from in debug mode")
 	burstDuration := fs.Duration("discovery-burst-duration", 0, "send SSDP and mDNS discovery announcements at startup for this long")
 	burstInterval := fs.Duration("discovery-burst-interval", time.Second, "interval for discovery-burst announcements")
-	identityProfile := fs.String("identity-profile", "", "experimental identity profile: empty/default, ambilight, or hass")
-	descriptionProfile := fs.String("description-profile", "", "experimental description.xml profile: empty/default or ambilight-reference")
-	ssdpMediaServerAlias := fs.Bool("ssdp-media-server-alias", false, "also advertise/respond as UPnP MediaServer:1 for Philips TV discovery experiments")
-	ssdpMediaServerBasicBody := fs.Bool("ssdp-media-server-basic-body", false, "serve a Hue Basic descriptor body from the MediaServer alias URL")
-	ssdpDescriptorVariants := fs.Bool("ssdp-descriptor-variants", false, "also advertise query-scoped descriptor variants for Philips TV discovery experiments")
 	disableSSDP := fs.Bool("disable-ssdp", false, "do not run the SSDP responder (mDNS-only, like ha-hue-entertainment) — diagnostic")
 	bridgeIP := fs.String("bridge-ip", "", "Bridge Pro IP for auto-pairing (empty = cloud discovery)")
 	skipTLS := fs.Bool("skip-tls-verify", false, "skip TLS verification to the Bridge Pro (instead of cert pinning)")
@@ -116,25 +106,20 @@ func parseServeOptions(args []string) (serveOptions, error) {
 		return serveOptions{}, err
 	}
 	return serveOptions{
-		configPath:               *cfgPath,
-		httpPort:                 *httpPort,
-		advertiseIP:              *advIP,
-		debug:                    *debug,
-		tvIP:                     *tvIP,
-		discoveryBurstDuration:   *burstDuration,
-		discoveryBurstInterval:   *burstInterval,
-		identityProfile:          *identityProfile,
-		descriptionProfile:       *descriptionProfile,
-		ssdpMediaServerAlias:     *ssdpMediaServerAlias,
-		ssdpMediaServerBasicBody: *ssdpMediaServerBasicBody,
-		ssdpDescriptorVariants:   *ssdpDescriptorVariants,
-		disableSSDP:              *disableSSDP,
-		bridgeIP:                 *bridgeIP,
-		skipTLS:                  *skipTLS,
-		idleOffTimeout:           *idleOffTimeout,
-		controlledLightWindow:    *controlledLightWindow,
-		mode:                     *mode,
-		dtlsFallbackTimeout:      *dtlsFallbackTimeout,
+		configPath:             *cfgPath,
+		httpPort:               *httpPort,
+		advertiseIP:            *advIP,
+		debug:                  *debug,
+		tvIP:                   *tvIP,
+		discoveryBurstDuration: *burstDuration,
+		discoveryBurstInterval: *burstInterval,
+		disableSSDP:            *disableSSDP,
+		bridgeIP:               *bridgeIP,
+		skipTLS:                *skipTLS,
+		idleOffTimeout:         *idleOffTimeout,
+		controlledLightWindow:  *controlledLightWindow,
+		mode:                   *mode,
+		dtlsFallbackTimeout:    *dtlsFallbackTimeout,
 	}, nil
 }
 
@@ -148,6 +133,13 @@ func runServe(args []string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+
+	// Snapshot the paired Pro once, under the config mutex, before launching any
+	// goroutine that can re-pair (autoPairPro) or reconnect (watchPro) it. SetPro
+	// replaces the pointer rather than mutating in place, so this snapshot stays a
+	// consistent, immutable view for all the startup wiring below; reads after
+	// startup go through cfg.GetPro().
+	pro := cfg.GetPro()
 
 	ip := opts.advertiseIP
 	if ip == "" {
@@ -163,7 +155,7 @@ func runServe(args []string, log *slog.Logger) error {
 	// re-pairing — POST /api then returns the stored user without the 5s delay.
 	log.Info("saved config",
 		"path", opts.configPath,
-		"pro", cfg.Pro, // LogValue → name/id/host, or <none> when unpaired
+		"pro", pro, // LogValue → name/id/host, or <none> when unpaired
 		"tv_paired", len(cfg.PairedDeviceTypes()),
 		"tv_devicetypes", cfg.PairedDeviceTypes(),
 	)
@@ -178,23 +170,12 @@ func runServe(args []string, log *slog.Logger) error {
 	}
 	entertainmentMode := opts.mode == "entertainment"
 
-	// entProbe enables the passive entertainment diagnostic (RELUME_ENT_PROBE=1) in
-	// REST mode: confirm the TV's stream activation and observe whether it opens a
-	// DTLS stream on :2100 — without the -debug flood. Superseded by entertainment
-	// mode (which actually services the stream), so it is ignored there.
-	entProbe := os.Getenv("RELUME_ENT_PROBE") != "" && !entertainmentMode
-
 	clip := clipv1.New(cfg, ip, opts.httpPort, log)
 	clip.Debug = opts.debug
 	clip.TVIP = opts.tvIP
-	clip.EntProbe = entProbe
 	clip.EntertainmentMode = entertainmentMode
 	clip.SetDTLSFallbackTimeout(opts.dtlsFallbackTimeout)
 	log.Info("control mode", "mode", opts.mode)
-	clip.IdentityProfile = opts.identityProfile
-	clip.DescriptionProfile = opts.descriptionProfile
-	clip.MediaServerAlias = opts.ssdpMediaServerAlias
-	clip.MediaServerBasicBody = opts.ssdpMediaServerBasicBody
 
 	// controlled tracks the lights the TV is currently driving for Ambilight (a
 	// sliding window). The restart/idle flash and idle-off target only these — and
@@ -209,10 +190,10 @@ func runServe(args []string, log *slog.Logger) error {
 	controlled := bridge.NewControlledSet(window)
 	clip.ControlledLights = controlled.Current
 
-	if cfg.Pro != nil {
-		client := bridgepro.New(cfg.Pro)
+	if pro != nil {
+		client := bridgepro.New(pro)
 		clip.SetLightProvider(newProvider(client, controlled, log))
-		log.Info("bridge pro paired", "pro", cfg.Pro)
+		log.Info("bridge pro paired", "pro", pro)
 	}
 	var responder *ssdp.Responder
 	if opts.disableSSDP {
@@ -222,12 +203,8 @@ func runServe(args []string, log *slog.Logger) error {
 		responder.Debug = opts.debug
 		responder.BurstDuration = opts.discoveryBurstDuration
 		responder.BurstInterval = opts.discoveryBurstInterval
-		responder.IdentityProfile = opts.identityProfile
-		responder.MediaServerAlias = opts.ssdpMediaServerAlias
-		responder.DescriptorVariants = opts.ssdpDescriptorVariants
 	}
 	announcer := mdns.New(cfg.Identity, ip, opts.httpPort, log)
-	announcer.IdentityProfile = opts.identityProfile
 	announcer.BurstDuration = opts.discoveryBurstDuration
 	announcer.BurstInterval = opts.discoveryBurstInterval
 
@@ -237,7 +214,7 @@ func runServe(args []string, log *slog.Logger) error {
 	// Pair the Bridge Pro backend in the background, independently of the TV: the
 	// TV can discover/pair relume before the Pro is paired; relume just returns an
 	// empty light list until the Pro pairing completes, then hot-loads the lights.
-	if cfg.Pro == nil {
+	if pro == nil {
 		log.Warn("no bridge pro paired yet – auto-pairing in background; TAP the Bridge Pro link button")
 		go autoPairPro(ctx, cfg, clip, controlled, opts.bridgeIP, opts.skipTLS, log)
 	} else {
@@ -246,14 +223,15 @@ func runServe(args []string, log *slog.Logger) error {
 		// shutdown flash below — on `docker compose up -d` the old container gets
 		// SIGTERM and blinks the currently-driven Ambilight bulbs red+off first.
 		// Keep the already-paired Pro reachable across reboots / IP changes.
-		go watchPro(ctx, cfg, clip, controlled, opts.bridgeIP, opts.skipTLS, log)
+		w := newProWatcher(cfg, clip, controlled, opts.bridgeIP, opts.skipTLS, log)
+		go w.run(ctx)
 	}
 
 	// Summarize the high-frequency Ambilight light-state writes periodically
-	// instead of logging every single request. The probe shortens the window to
-	// surface the update-rate (Hz) reading sooner during a diagnostic run.
+	// instead of logging every single request. Entertainment mode shortens the
+	// window to surface the update-rate (Hz) reading sooner.
 	activityWindow := 30 * time.Second
-	if entProbe || entertainmentMode {
+	if entertainmentMode {
 		activityWindow = 10 * time.Second
 	}
 	go clip.LogActivitySummary(ctx, activityWindow)
@@ -263,8 +241,7 @@ func runServe(args []string, log *slog.Logger) error {
 	// than racing the receiver's async OnStreamStop against process exit.
 	var entStreamer *entertainment.ProStreamer
 
-	switch {
-	case entertainmentMode:
+	if entertainmentMode {
 		// Entertainment mode: run the real DTLS receiver on :2100. It decrypts the
 		// TV's stream (PSK = the clientkey relume minted at pairing) and decodes the
 		// HueStream frames.
@@ -273,14 +250,14 @@ func runServe(args []string, log *slog.Logger) error {
 		// lights off mid-stream (the TV streams via DTLS, not REST writes, here).
 		recv.OnActivity = clip.MarkActivity
 
-		if cfg.Pro != nil {
+		if pro != nil {
 			// Phase C: relume opens its OWN entertainment stream to the Pro over DTLS
 			// and re-encodes the decoded TV frames at full rate, avoiding the per-light
 			// REST writes that overflow the Pro's command queue (503). The streamer
 			// auto-falls back to the REST forward (Phase B) if DTLS cannot establish.
-			proClient := bridgepro.New(cfg.Pro)
-			clientKey, _ := hex.DecodeString(cfg.Pro.ClientKey)
-			streamer := entertainment.NewProStreamer(proClient, cfg.Pro.Host, cfg.Pro.AppKey, clientKey, clip.ForwardLight, log)
+			proClient := bridgepro.New(pro)
+			clientKey, _ := hex.DecodeString(pro.ClientKey)
+			streamer := entertainment.NewProStreamer(proClient, pro.Host, pro.AppKey, clientKey, clip.ForwardLight, log)
 			// Persist/reuse relume's own entertainment_configuration across restarts
 			// instead of re-finding it each stream (Phase D).
 			streamer.SetConfigStore(cfg.LoadEntConfigID, func(id string) {
@@ -317,16 +294,6 @@ func runServe(args []string, log *slog.Logger) error {
 		go func() {
 			if err := recv.Run(ctx); err != nil && ctx.Err() == nil {
 				log.Warn("entertainment receiver", "err", err)
-			}
-		}()
-	case entProbe:
-		// Passive diagnostic (REST mode): observe whether the TV opens a DTLS stream
-		// on :2100 after activation. Probe-only; never sends.
-		probe := diag.NewEntertainmentProbe(ip, log)
-		log.Info("entertainment probe active (RELUME_ENT_PROBE): confirming stream activation + watching udp :2100")
-		go func() {
-			if err := probe.Run(ctx); err != nil && ctx.Err() == nil {
-				log.Warn("entertainment probe", "err", err)
 			}
 		}()
 	}
@@ -391,10 +358,35 @@ func runServe(args []string, log *slog.Logger) error {
 	// cancelled ctx) and never leaks past process exit (Phase D).
 	stopEntertainment(entStreamer)
 	// Stop accepting TV writes first (above), then signal the restart on the lights.
-	if cfg.Pro != nil {
-		bridge.FlashRestart(bridgepro.New(cfg.Pro), log, controlled.Current())
+	// GetPro reads the current pairing under the mutex (watchPro may have reconnected
+	// it to a new IP since startup).
+	if shutPro := cfg.GetPro(); shutPro != nil {
+		flashRestartBounded(bridgepro.New(shutPro), log, controlled.Current(), shutdownFlashBudget)
 	}
 	return nil
+}
+
+// shutdownFlashBudget caps the total time the restart flash may take on shutdown.
+// FlashRestart runs synchronously and each light write blocks on the Bridge Pro's
+// HTTP timeout; if the Pro is unreachable at shutdown, an unbounded flash would
+// stall well past the container stop grace (then get SIGKILLed). This bounds it so
+// the process exits promptly.
+const shutdownFlashBudget = 3 * time.Second
+
+// flashRestartBounded runs the restart flash with a hard total deadline: it returns
+// after the flash completes or after max elapses (whichever first). On timeout the
+// flash goroutine is abandoned — the process is exiting anyway.
+func flashRestartBounded(client *bridgepro.Client, log *slog.Logger, ids []string, max time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		bridge.FlashRestart(client, log, ids)
+	}()
+	select {
+	case <-done:
+	case <-time.After(max):
+		log.Warn("restart flash timed out (Bridge Pro unreachable?) — exiting anyway", "after", max.String())
+	}
 }
 
 // stopEntertainment tears down the Pro entertainment stream on shutdown (idempotent
@@ -475,11 +467,11 @@ func idleShouldFire(now, lastSeen time.Time, fired bool, idleTimeout time.Durati
 // (the one step that cannot be automated). On success it persists the credentials
 // and hot-loads the light backend so the already-paired TV starts seeing lights.
 func autoPairPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, controlled *bridge.ControlledSet, bridgeIP string, skipTLS bool, log *slog.Logger) {
-	host := bridgeIP
+	var host, discoveryID string
 	for host == "" {
-		bridges, derr := bridgepro.Discover()
-		if derr == nil && len(bridges) > 0 {
-			host = bridges[0].InternalIPAddress
+		h, id, derr := resolveProHost(bridgeIP, "", bridgepro.Discover, log)
+		if derr == nil && h != "" {
+			host, discoveryID = h, id
 			log.Info("bridge pro discovered", "host", host)
 			break
 		}
@@ -489,12 +481,14 @@ func autoPairPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, c
 		}
 	}
 
-	pro := &config.BridgePro{Host: host, SkipTLSVerify: skipTLS}
-	for !skipTLS && pro.CertSHA256 == "" {
-		fp, ferr := bridgepro.FetchLeafFingerprint(host)
+	var pro *config.BridgePro
+	for pro == nil {
+		p, ferr := pinProShell(host, discoveryID, skipTLS, bridgepro.FetchLeafFingerprint)
 		if ferr == nil {
-			pro.CertSHA256 = fp
-			log.Info("bridge pro certificate pinned", "sha256", fp)
+			pro = p
+			if pro.CertSHA256 != "" {
+				log.Info("bridge pro certificate pinned", "sha256", pro.CertSHA256)
+			}
 			break
 		}
 		log.Warn("bridge pro not paired yet: cannot reach it to pin its certificate — power the Bridge Pro on; retrying", "host", host, "err", ferr)
@@ -513,9 +507,7 @@ func autoPairPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, c
 			client := bridgepro.New(pro)
 			// Best-effort: capture the Pro's name + bridge id while it is reachable,
 			// so logs can reference it (not just the IP). See config.BridgePro.LogValue.
-			if name, id, ierr := client.BridgeInfo(); ierr == nil {
-				pro.Name, pro.BridgeID = name, id
-			}
+			captureBridgeInfo(pro, client)
 			if serr := cfg.SetPro(pro); serr != nil {
 				log.Error("persisting bridge pro pairing", "err", serr)
 				return
@@ -536,74 +528,12 @@ func autoPairPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, c
 	}
 }
 
-// watchPro keeps the already-paired Bridge Pro reachable. It health-checks
-// periodically and, on failure, re-discovers the Pro's current IP (cloud or
-// -bridge-ip), re-pins its certificate and hot-swaps the light provider — all
-// without a new button press, since the stored appKey/clientKey stay valid
-// across reboots and DHCP IP changes.
-func watchPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, controlled *bridge.ControlledSet, bridgeIP string, skipTLS bool, log *slog.Logger) {
-	const checkInterval = 60 * time.Second
-	pro := cfg.Pro
-	if pro == nil {
-		return
-	}
-	// Backfill the Pro's name/id for installs paired before they were captured, so
-	// logs can reference it. Best-effort and only while the Pro is reachable.
-	if pro.Name == "" && pro.BridgeID == "" {
-		if name, id, ierr := bridgepro.New(pro).BridgeInfo(); ierr == nil && (name != "" || id != "") {
-			pro.Name, pro.BridgeID = name, id
-			if serr := cfg.SetPro(pro); serr != nil {
-				log.Warn("persisting hue bridge pro name/id", "err", serr)
-			}
-		}
-	}
-	for sleepCtx(ctx, checkInterval) {
-		if _, err := bridgepro.New(pro).Lights(); err == nil {
-			continue // still reachable
-		}
-		log.Warn("Hue Bridge Pro not reachable — is it turned off? "+
-			"Turn it back on (or check its power/network cable); "+
-			"relume can't control the lights until it is back. Retrying.", "pro", pro)
-
-		host := bridgeIP
-		if host == "" {
-			if bridges, derr := bridgepro.Discover(); derr == nil && len(bridges) > 0 {
-				host = bridges[0].InternalIPAddress
-			}
-		}
-		if host == "" {
-			log.Warn("Hue Bridge Pro reconnect: not found via discovery; will retry")
-			continue
-		}
-
-		certSHA := pro.CertSHA256
-		if !skipTLS && !pro.SkipTLSVerify {
-			fp, ferr := bridgepro.FetchLeafFingerprint(host)
-			if ferr != nil {
-				log.Warn("Hue Bridge Pro reconnect: cert fetch failed; will retry", "host", host, "err", ferr)
-				continue
-			}
-			certSHA = fp
-		}
-
-		updated := reconnectProConfig(pro, host, certSHA, skipTLS)
-		if _, err := bridgepro.New(updated).Lights(); err != nil {
-			log.Warn("Hue Bridge Pro reconnect: still unreachable", "host", host, "err", err)
-			continue
-		}
-		if serr := cfg.SetPro(updated); serr != nil {
-			log.Error("persisting reconnected Hue Bridge Pro", "err", serr)
-			continue
-		}
-		clip.SetLightProvider(newProvider(bridgepro.New(updated), controlled, log))
-		pro = updated
-		log.Info("Hue Bridge Pro reconnected", "pro", pro)
-	}
-}
-
 // reconnectProConfig builds the Bridge Pro config for a reconnect: it keeps the
 // existing credentials (appKey/clientKey — valid across reboots and IP changes,
-// so no re-pairing) and refreshes only the host and pinned certificate.
+// so no re-pairing) and refreshes only the host and pinned certificate. The
+// DiscoveryID carries forward like Name/BridgeID (it identifies the SAME bridge
+// across the reconnect); the caller may overwrite it when a fresh discovery
+// returned the matched bridge's id.
 func reconnectProConfig(old *config.BridgePro, host, certSHA256 string, skipTLS bool) *config.BridgePro {
 	return &config.BridgePro{
 		Host:          host,
@@ -613,6 +543,7 @@ func reconnectProConfig(old *config.BridgePro, host, certSHA256 string, skipTLS 
 		SkipTLSVerify: skipTLS || old.SkipTLSVerify,
 		Name:          old.Name,
 		BridgeID:      old.BridgeID,
+		DiscoveryID:   old.DiscoveryID,
 	}
 }
 
@@ -690,24 +621,20 @@ func runSetup(args []string, log *slog.Logger) error {
 		return err
 	}
 
-	host := *bridgeIP
-	if host == "" {
-		bridges, derr := bridgepro.Discover()
-		if derr != nil || len(bridges) == 0 {
-			return fmt.Errorf("no bridge found; please specify -bridge-ip (discover: %v)", derr)
-		}
-		host = bridges[0].InternalIPAddress
+	host, discoveryID, derr := resolveProHost(*bridgeIP, "", bridgepro.Discover, log)
+	if derr != nil || host == "" {
+		return fmt.Errorf("no bridge found; please specify -bridge-ip (discover: %v)", derr)
+	}
+	if *bridgeIP == "" {
 		fmt.Printf("Bridge found via cloud discovery: %s\n", host)
 	}
 
-	pro := &config.BridgePro{Host: host, SkipTLSVerify: *skipTLS}
-	if !*skipTLS {
-		fp, ferr := bridgepro.FetchLeafFingerprint(host)
-		if ferr != nil {
-			return fmt.Errorf("pin certificate: %w", ferr)
-		}
-		pro.CertSHA256 = fp
-		log.Info("certificate pinned", "sha256", fp)
+	pro, ferr := pinProShell(host, discoveryID, *skipTLS, bridgepro.FetchLeafFingerprint)
+	if ferr != nil {
+		return fmt.Errorf("pin certificate: %w", ferr)
+	}
+	if pro.CertSHA256 != "" {
+		log.Info("certificate pinned", "sha256", pro.CertSHA256)
 	}
 
 	httpClient := bridgepro.HTTPClientFor(pro)
@@ -732,9 +659,7 @@ func runSetup(args []string, log *slog.Logger) error {
 	pro.ClientKey = res.ClientKey
 	// Best-effort: capture the Pro's name + bridge id for log references.
 	client := bridgepro.New(pro)
-	if name, id, ierr := client.BridgeInfo(); ierr == nil {
-		pro.Name, pro.BridgeID = name, id
-	}
+	captureBridgeInfo(pro, client)
 	if err := cfg.SetPro(pro); err != nil {
 		return err
 	}

@@ -47,19 +47,6 @@ func (i Identity) UUID() string {
 	return "2f402f80-da50-11e1-9b23-" + i.Serial
 }
 
-// SerialForProfile returns the serialNumber value advertised in description.xml.
-func (i Identity) SerialForProfile(profile string) string {
-	if profile == "ambilight" {
-		return strings.ToLower(i.BridgeID())
-	}
-	return i.Serial
-}
-
-// UUIDForProfile returns the UPnP UUID used in SSDP USN and description.xml UDN.
-func (i Identity) UUIDForProfile(profile string) string {
-	return "2f402f80-da50-11e1-9b23-" + i.SerialForProfile(profile)
-}
-
 // ApiUser is a client paired by the TV.
 type ApiUser struct {
 	Username   string `json:"username"`
@@ -85,6 +72,9 @@ type BridgePro struct {
 	// BridgeID is the Bridge Pro's bridge id, captured at pairing (best-effort).
 	// A stable reference in logs, independent of the IP.
 	BridgeID string `json:"bridgeId,omitempty"`
+	// DiscoveryID is the Pro's cloud-discovery id, captured at pairing, so a later
+	// re-discovery can pick THIS bridge rather than bridges[0] on a multi-bridge LAN.
+	DiscoveryID string `json:"discoveryId,omitempty"`
 }
 
 // LogValue renders the Bridge Pro as a compact reference for structured logs:

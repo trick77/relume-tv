@@ -11,11 +11,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"strings"
 	"time"
 
 	"github.com/grandcat/zeroconf"
 	"github.com/trick77/relume/internal/config"
+	"github.com/trick77/relume/internal/netutil"
 )
 
 const (
@@ -29,10 +29,6 @@ type Announcer struct {
 	advIP string
 	port  int
 	log   *slog.Logger
-	// IdentityProfile selects experimental wire-identity compatibility tweaks.
-	// Empty keeps the default; "ambilight" matches the Ambilight-specific
-	// OSS emulator.
-	IdentityProfile string
 	// BurstDuration enables a diagnostic re-announcement burst after startup.
 	// Defaults to disabled.
 	BurstDuration time.Duration
@@ -59,7 +55,7 @@ func (a *Announcer) Run(ctx context.Context) error {
 	spec := a.serviceSpec()
 
 	var ifaces []net.Interface
-	if iface, err := interfaceForIP(a.advIP); err != nil {
+	if iface, err := netutil.InterfaceForIP(a.advIP); err != nil {
 		a.log.Warn("mdns: interface for advertise IP not found, using all", "err", err)
 	} else {
 		ifaces = []net.Interface{*iface}
@@ -114,9 +110,6 @@ func (a *Announcer) Run(ctx context.Context) error {
 func (a *Announcer) serviceSpec() serviceSpec {
 	bridgeID := a.id.BridgeID()
 	host := a.id.Serial
-	if a.IdentityProfile == "ambilight" {
-		host = strings.ToLower(bridgeID)
-	}
 	return serviceSpec{
 		instance: "Philips Hue - " + bridgeID[len(bridgeID)-6:],
 		service:  service,
@@ -129,31 +122,4 @@ func (a *Announcer) serviceSpec() serviceSpec {
 			"modelid=BSB002",
 		},
 	}
-}
-
-// interfaceForIP returns the multicast-capable interface that carries the given IP.
-func interfaceForIP(ip string) (*net.Interface, error) {
-	target := net.ParseIP(ip)
-	if target == nil {
-		return nil, fmt.Errorf("invalid IP %q", ip)
-	}
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return nil, err
-	}
-	for i := range ifaces {
-		if ifaces[i].Flags&net.FlagMulticast == 0 || ifaces[i].Flags&net.FlagUp == 0 {
-			continue
-		}
-		addrs, aerr := ifaces[i].Addrs()
-		if aerr != nil {
-			continue
-		}
-		for _, a := range addrs {
-			if ipn, ok := a.(*net.IPNet); ok && ipn.IP.Equal(target) {
-				return &ifaces[i], nil
-			}
-		}
-	}
-	return nil, fmt.Errorf("no multicast-capable interface with IP %s", ip)
 }

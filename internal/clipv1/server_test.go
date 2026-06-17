@@ -8,11 +8,11 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/trick77/relume/internal/config"
-	"github.com/trick77/relume/internal/upnp"
 )
 
 func mustGet(t *testing.T, url string) *http.Response {
@@ -59,7 +59,7 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 		t.Fatalf("config: %v", err)
 	}
 	s := New(cfg, "10.0.0.5", 80, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	s.pairAcceptDelay = 0 // tests pair immediately; the production delay is covered separately
+	s.pairing.acceptDelay = 0 // tests pair immediately; the production delay is covered separately
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	return s, ts
@@ -143,7 +143,7 @@ func TestPairing_isIdempotentForSameDeviceType(t *testing.T) {
 func TestPairing_isDelayedThenAccepted(t *testing.T) {
 	// Given: a short auto-pairing delay so the test stays fast
 	s, ts := newTestServer(t)
-	s.pairAcceptDelay = 120 * time.Millisecond
+	s.pairing.acceptDelay = 120 * time.Millisecond
 	body := `{"devicetype":"65OLED806/12","generateclientkey":true}`
 
 	// When: the TV makes its first pairing attempt within the delay window
@@ -227,208 +227,6 @@ func TestDescriptionXML_servesTextXMLContentType(t *testing.T) {
 	}
 }
 
-func TestDescriptionXML_aliasVariantServesTextXMLContentType(t *testing.T) {
-	// Given
-	s, ts := newTestServer(t)
-	s.MediaServerAlias = true
-
-	// When
-	resp := mustGet(t, ts.URL+"/description.xml?relume=ms1")
-	defer resp.Body.Close()
-	_, _ = io.ReadAll(resp.Body)
-
-	// Then
-	if got := resp.Header.Get("Content-Type"); got != "text/xml" {
-		t.Errorf("Content-Type = %q, expected text/xml", got)
-	}
-}
-
-func TestDescriptionXML_withHassProfileContainsHomeAssistantManufacturerFields(t *testing.T) {
-	// Given
-	s, ts := newTestServer(t)
-	s.IdentityProfile = "hass"
-
-	// When
-	resp := mustGet(t, ts.URL+"/description.xml")
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-
-	// Then
-	xml := string(body)
-	for _, want := range []string{
-		"<manufacturer>Royal Philips Electronics</manufacturer>",
-		"<manufacturerURL>http://www.philips.com</manufacturerURL>",
-	} {
-		if !strings.Contains(xml, want) {
-			t.Errorf("description.xml does not contain %q:\n%s", want, xml)
-		}
-	}
-}
-
-func TestDescriptionXML_withAmbilightProfileKeepsSignifyManufacturerFields(t *testing.T) {
-	// Given
-	s, ts := newTestServer(t)
-	s.IdentityProfile = "ambilight"
-
-	// When
-	resp := mustGet(t, ts.URL+"/description.xml")
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-
-	// Then
-	if got := resp.Header.Get("Server"); got != upnp.ServerHeaderAmbilight {
-		t.Errorf("Server header = %q, expected %q", got, upnp.ServerHeaderAmbilight)
-	}
-	if got := resp.Header.Get("Cache-Control"); got != "max-age=100" {
-		t.Errorf("Cache-Control = %q, expected max-age=100", got)
-	}
-	xml := string(body)
-	for _, want := range []string{
-		"<deviceType>urn:schemas-upnp-org:device:Basic:1</deviceType>",
-		"<manufacturer>Signify</manufacturer>",
-		"<manufacturerURL>http://www.meethue.com</manufacturerURL>",
-		"<modelName>Philips hue bridge 2015</modelName>",
-		"<modelNumber>BSB002</modelNumber>",
-	} {
-		if !strings.Contains(xml, want) {
-			t.Errorf("description.xml does not contain %q:\n%s", want, xml)
-		}
-	}
-}
-
-func TestDescriptionXML_withAmbilightReferenceDescriptionProfile(t *testing.T) {
-	// Given
-	s, ts := newTestServer(t)
-	s.IdentityProfile = "ambilight"
-	s.DescriptionProfile = "ambilight-reference"
-
-	// When
-	resp := mustGet(t, ts.URL+"/description.xml")
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-
-	// Then
-	xml := string(body)
-	for _, want := range []string{
-		"<specVersion><major>1</major><minor>0</minor></specVersion>",
-		"<friendlyName>Ambilight Bridge (10.0.0.5)</friendlyName>",
-		"<manufacturer>Signify</manufacturer>",
-		"<modelNumber>BSB002</modelNumber>",
-	} {
-		if !strings.Contains(xml, want) {
-			t.Errorf("description.xml does not contain %q:\n%s", want, xml)
-		}
-	}
-}
-
-func TestDescriptionXML_withMediaServerAliasKeepsDefaultDeviceTypeForPlainPath(t *testing.T) {
-	// Given
-	s, ts := newTestServer(t)
-	s.IdentityProfile = "hass"
-	s.MediaServerAlias = true
-
-	// When
-	resp := mustGet(t, ts.URL+"/description.xml")
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-
-	// Then
-	xml := string(body)
-	for _, want := range []string{
-		"<deviceType>urn:schemas-upnp-org:device:Basic:1</deviceType>",
-		"<manufacturer>Royal Philips Electronics</manufacturer>",
-		"<modelName>Philips hue bridge 2015</modelName>",
-		"<modelNumber>BSB002</modelNumber>",
-	} {
-		if !strings.Contains(xml, want) {
-			t.Errorf("description.xml does not contain %q:\n%s", want, xml)
-		}
-	}
-	if strings.Contains(xml, "<deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>") {
-		t.Errorf("plain description.xml contains MediaServer deviceType:\n%s", xml)
-	}
-}
-
-func TestDescriptionXML_withMediaServerAliasContainsMediaServerDeviceTypeForAliasQuery(t *testing.T) {
-	// Given
-	s, ts := newTestServer(t)
-	s.IdentityProfile = "hass"
-	s.MediaServerAlias = true
-
-	// When
-	resp := mustGet(t, ts.URL+"/description.xml?relume=ms1")
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-
-	// Then
-	if got := resp.Header.Get("Cache-Control"); got != "max-age=1" {
-		t.Errorf("Cache-Control = %q, expected max-age=1", got)
-	}
-	xml := string(body)
-	for _, want := range []string{
-		"<deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>",
-		"<manufacturer>Royal Philips Electronics</manufacturer>",
-		"<modelName>Philips hue bridge 2015</modelName>",
-		"<modelNumber>BSB002</modelNumber>",
-	} {
-		if !strings.Contains(xml, want) {
-			t.Errorf("description.xml does not contain %q:\n%s", want, xml)
-		}
-	}
-	if strings.Contains(xml, "<deviceType>urn:schemas-upnp-org:device:Basic:1</deviceType>") {
-		t.Errorf("alias description.xml still contains Basic deviceType:\n%s", xml)
-	}
-}
-
-func TestDescriptionXML_withMediaServerBasicBodyKeepsBasicDeviceTypeForAliasQuery(t *testing.T) {
-	// Given
-	s, ts := newTestServer(t)
-	s.IdentityProfile = "ambilight"
-	s.MediaServerAlias = true
-	s.MediaServerBasicBody = true
-
-	// When
-	resp := mustGet(t, ts.URL+"/description.xml?relume=ms1")
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-
-	// Then
-	if got := resp.Header.Get("Cache-Control"); got != "max-age=1" {
-		t.Errorf("Cache-Control = %q, expected max-age=1", got)
-	}
-	xml := string(body)
-	if !strings.Contains(xml, "<deviceType>urn:schemas-upnp-org:device:Basic:1</deviceType>") {
-		t.Errorf("alias description.xml does not contain Basic deviceType:\n%s", xml)
-	}
-	if strings.Contains(xml, "<deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>") {
-		t.Errorf("alias description.xml contains MediaServer deviceType:\n%s", xml)
-	}
-}
-
-func TestDescriptionXML_withBasicDescriptorVariantKeepsBasicDeviceType(t *testing.T) {
-	// Given
-	s, ts := newTestServer(t)
-	s.IdentityProfile = "hass"
-	s.MediaServerAlias = true
-
-	// When
-	resp := mustGet(t, ts.URL+"/description.xml?relume=basic1")
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-
-	// Then
-	if got := resp.Header.Get("Cache-Control"); got != "max-age=1" {
-		t.Errorf("Cache-Control = %q, expected max-age=1", got)
-	}
-	xml := string(body)
-	if !strings.Contains(xml, "<deviceType>urn:schemas-upnp-org:device:Basic:1</deviceType>") {
-		t.Errorf("basic descriptor variant does not contain Basic deviceType:\n%s", xml)
-	}
-	if strings.Contains(xml, "<deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>") {
-		t.Errorf("basic descriptor variant contains MediaServer deviceType:\n%s", xml)
-	}
-}
-
 func TestShortConfig_unauthenticated(t *testing.T) {
 	// Given
 	_, ts := newTestServer(t)
@@ -448,29 +246,6 @@ func TestShortConfig_unauthenticated(t *testing.T) {
 	}
 	if cfg["name"] != "Relume" {
 		t.Errorf("name = %v, expected Relume", cfg["name"])
-	}
-}
-
-func TestConfigWithAmbilightProfileReturnsShortConfigForUnknownUser(t *testing.T) {
-	// Given
-	s, ts := newTestServer(t)
-	s.IdentityProfile = "ambilight"
-
-	// When
-	resp := mustGet(t, ts.URL+"/api/not-paired/config")
-	defer resp.Body.Close()
-	var cfg map[string]any
-
-	// Then
-	json.NewDecoder(resp.Body).Decode(&cfg)
-	if cfg["modelid"] != "BSB002" {
-		t.Errorf("modelid = %v", cfg["modelid"])
-	}
-	if cfg["datastoreversion"] != "126" {
-		t.Errorf("datastoreversion = %v", cfg["datastoreversion"])
-	}
-	if _, ok := cfg["error"]; ok {
-		t.Fatalf("unexpected error response: %v", cfg)
 	}
 }
 
@@ -728,10 +503,10 @@ func mustPut(t *testing.T, url, body string) *http.Response {
 	return resp
 }
 
-func TestStreamActivation_underProbe_confirmsAndReflectsOwner(t *testing.T) {
-	// Given: the entertainment probe is on and the TV is paired
+func TestStreamActivation_entertainmentMode_confirmsAndReflectsOwner(t *testing.T) {
+	// Given: entertainment mode is on and the TV is paired
 	s, ts := newTestServer(t)
-	s.EntProbe = true
+	s.EntertainmentMode = true
 	resp := mustPostUA(t, ts.URL+"/api", `{"devicetype":"Philips_TV#Ambilight","generateclientkey":true}`, tvUserAgent)
 	defer resp.Body.Close()
 	var paired []map[string]map[string]string
@@ -763,8 +538,8 @@ func TestStreamActivation_underProbe_confirmsAndReflectsOwner(t *testing.T) {
 	}
 }
 
-func TestStreamActivation_withoutProbe_keepsLegacyAck(t *testing.T) {
-	// Given: the probe is off (default)
+func TestStreamActivation_restMode_keepsLegacyAck(t *testing.T) {
+	// Given: REST mode (default, entertainment mode off)
 	s, ts := newTestServer(t)
 	resp := mustPostUA(t, ts.URL+"/api", `{"devicetype":"Philips_TV#Ambilight","generateclientkey":true}`, tvUserAgent)
 	defer resp.Body.Close()
@@ -796,7 +571,7 @@ func TestStreamActivation_entertainmentMode_fallsBackToRESTOnDTLSTimeout(t *test
 	// Given: entertainment mode with a short DTLS watchdog and a paired TV
 	s, ts := newTestServer(t)
 	s.EntertainmentMode = true
-	s.dtlsFallbackTimeout = 30 * time.Millisecond
+	s.stream.fallbackTimeout = 30 * time.Millisecond
 	resp := mustPostUA(t, ts.URL+"/api", `{"devicetype":"Philips_TV#Ambilight","generateclientkey":true}`, tvUserAgent)
 	defer resp.Body.Close()
 	var paired []map[string]map[string]string
@@ -838,7 +613,7 @@ func TestStreamActivation_entertainmentMode_dtlsUpCancelsWatchdog(t *testing.T) 
 	// Given: entertainment mode with a watchdog and a paired TV
 	s, ts := newTestServer(t)
 	s.EntertainmentMode = true
-	s.dtlsFallbackTimeout = 80 * time.Millisecond
+	s.stream.fallbackTimeout = 80 * time.Millisecond
 	resp := mustPostUA(t, ts.URL+"/api", `{"devicetype":"Philips_TV#Ambilight","generateclientkey":true}`, tvUserAgent)
 	defer resp.Body.Close()
 	var paired []map[string]map[string]string
@@ -861,6 +636,99 @@ func TestStreamActivation_entertainmentMode_dtlsUpCancelsWatchdog(t *testing.T) 
 	actResp2.Body.Close()
 	if got := act2[0]["success"]["/groups/1/stream/active"]; got != true {
 		t.Fatalf("DTLS up → activation must stay confirmed (no false fallback), got %v", act2)
+	}
+}
+
+// M1: a watchdog callback that began firing just before the stream came up must
+// NOT stickily fall a HEALTHY TV back to REST. With the shared streamState lock and
+// the generation token, markStreamUp deterministically wins the race. The loop +
+// near-zero timeout maximizes the interleaving the -race detector can observe.
+func TestStreamState_markStreamUpWinsRacingWatchdog(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		ss := newStreamState(time.Nanosecond) // fire essentially immediately
+		log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+		// When: a watchdog is armed (and likely already firing) while the stream
+		// comes up concurrently.
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); ss.armWatchdog(true, log) }()
+		go func() { defer wg.Done(); ss.markStreamUp(log) }()
+		wg.Wait()
+
+		// Give any in-flight watchdog callback a chance to run and (wrongly) flip
+		// fallback before we assert.
+		time.Sleep(time.Millisecond)
+
+		// Then: the stream is up, so fallback must be clear.
+		if ss.inFallback() {
+			t.Fatalf("iteration %d: stream up but stuck in fallback", i)
+		}
+	}
+}
+
+// M1: a watchdog callback carrying a stale generation token (one that fired just
+// before a disarm/re-arm superseded it) must no-op, even though the stream never
+// came up (streamUp stays false). This isolates the generation-token guard — the
+// streamUp check cannot catch this path — matching the spec's "stopped/superseded"
+// invariant. In production the timer invokes watchdogFired with its captured gen,
+// so calling it directly with a stale gen is an exact simulation.
+func TestStreamState_supersededWatchdogNoOps(t *testing.T) {
+	ss := newStreamState(time.Minute) // long timeout: the real timer won't fire during the test
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	ss.armWatchdog(true, log) // gen -> 1
+	ss.disarmWatchdog()       // gen -> 2, supersedes the gen=1 callback
+
+	// When: the stale (gen=1) callback fires after being superseded — streamUp is
+	// false, so ONLY the generation guard can stop the fallback.
+	ss.watchdogFired(1, log)
+	if ss.inFallback() {
+		t.Fatal("a superseded (stale-generation) watchdog must not fall back")
+	}
+
+	// Control: a current-generation callback DOES fall back, proving the guard keys
+	// on the gen value rather than blanket no-op'ing.
+	ss.watchdogFired(ss.gen, log)
+	if !ss.inFallback() {
+		t.Fatal("current-generation watchdog should fall back")
+	}
+}
+
+// M1 safety net: a genuine activation with NO stream-up must still flip to fallback
+// so entertainment mode never leaves a non-streaming TV unfollowed.
+func TestStreamState_genuineTimeoutFallsBack(t *testing.T) {
+	ss := newStreamState(20 * time.Millisecond)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// When: armed but the TV never opens the DTLS stream.
+	ss.armWatchdog(true, log)
+	time.Sleep(80 * time.Millisecond)
+
+	// Then: the real safety net fired.
+	if !ss.inFallback() {
+		t.Fatal("genuine timeout with no stream-up should fall back to REST")
+	}
+}
+
+// M1 end-to-end via confirmsEntertainment(): after a racing stream-up, relume must
+// still confirm entertainment (not be stuck in REST fallback).
+func TestServer_confirmsEntertainment_afterRacingStreamUp(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		s, _ := newTestServer(t)
+		s.EntertainmentMode = true
+		s.stream.fallbackTimeout = time.Nanosecond
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); s.stream.armWatchdog(true, s.log) }()
+		go func() { defer wg.Done(); s.MarkDTLSStreamUp() }()
+		wg.Wait()
+		time.Sleep(time.Millisecond)
+
+		if !s.confirmsEntertainment() {
+			t.Fatalf("iteration %d: stream up but confirmsEntertainment() is false (stuck in fallback)", i)
+		}
 	}
 }
 

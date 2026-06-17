@@ -14,10 +14,8 @@ import (
 	"math"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/trick77/relume/internal/config"
@@ -45,27 +43,9 @@ type Server struct {
 	// Debug enables verbose request logging (User-Agent + body) — helpful for
 	// analyzing the real behavior of unknown TVs.
 	Debug bool
-	// IdentityProfile selects experimental wire-identity compatibility tweaks.
-	// Empty keeps the default; "ambilight" matches the Ambilight-specific
-	// OSS emulator; "hass" matches Home Assistant emulated-hue.
-	IdentityProfile string
-	// DescriptionProfile selects experimental description.xml body formatting.
-	// Empty keeps the default; "ambilight-reference" matches the Ambilight OSS descriptor.
-	DescriptionProfile string
-	// MediaServerAlias makes /description.xml match the opt-in SSDP MediaServer:1 alias.
-	MediaServerAlias bool
-	// MediaServerBasicBody keeps the ms1 alias URL but serves a Hue Basic descriptor body.
-	MediaServerBasicBody bool
 	// TVIP is the TV's IP (from -tv-ip). Pairing is auto-accepted only for the TV,
 	// identified by this IP or by the Android/Dalvik Philips-TV User-Agent.
 	TVIP string
-
-	// EntProbe enables the entertainment diagnostic (RELUME_ENT_PROBE=1): the TV's
-	// stream-activation PUT is confirmed with the real v1 success shape and the
-	// Entertainment group reflects stream.active+owner, so the TV proceeds to open
-	// the DTLS stream instead of aborting — letting the udp :2100 probe observe
-	// whether it tries DTLS at all. Off keeps the legacy log-and-ack behavior.
-	EntProbe bool
 
 	// EntertainmentMode makes relume confirm the TV's stream activation for real
 	// (so the TV opens the DTLS entertainment stream, which the receiver services)
@@ -81,46 +61,16 @@ type Server struct {
 	// activity accumulates the high-frequency light-state writes Ambilight sends
 	// (REST control path) so they can be summarized periodically instead of
 	// logging every single request. See LogActivitySummary.
-	activityMu    sync.Mutex
-	lightWrites   uint64
-	lightsTouched map[string]struct{}
-	// groupActionWrites counts PUT /groups/{id}/action writes — a second control
-	// path the TV could push Ambilight frames over. Tallied so the activity Hz
-	// reading cannot be faked out by frames arriving on the group endpoint.
-	groupActionWrites uint64
+	activity *activityTracker
 
-	// stream tracks the Entertainment group's stream state under EntProbe so GET
-	// /groups/1 reflects the activation the TV requested (active + owner).
-	streamMu     sync.Mutex
-	streamActive bool
-	streamOwner  string
+	// stream owns the Entertainment group's stream state in entertainment mode (the
+	// requested activation, the DTLS stream-up flag, the sticky REST fallback and
+	// the fallback watchdog) behind a single lock.
+	stream *streamState
 
-	// dtlsFallback (sticky) flips entertainment mode back to REST-follow when the TV
-	// confirmed stream activation but never opened the DTLS stream within
-	// dtlsFallbackTimeout. It is a safety net so entertainment mode never leaves the
-	// lights unfollowed on a TV/firmware that does not open the stream. Once set it
-	// stays set for the process lifetime (sticky). Guards: confirmsEntertainment.
-	dtlsFallback        atomic.Bool
-	dtlsFallbackTimeout time.Duration
-	dtlsMu              sync.Mutex
-	dtlsWatchdog        *time.Timer
-	// dtlsStreamUp tracks whether a TV DTLS stream is currently connected, so a
-	// re-activation while the stream is healthy does not arm a watchdog that would
-	// then falsely fall back (no fresh OnStreamStart fires for an already-up stream).
-	dtlsStreamUp atomic.Bool
-	// lastWriteAt is the time of the most recent Ambilight light-state write,
-	// stamped in handleSetLightState (so it is independent of Debug, unlike the
-	// activity counters above). The idle-off monitor reads it via LastActivity.
-	lastWriteAt time.Time
-
-	// pairMu guards firstPairSeen, the timestamp of the TV's first auto-pairing
-	// attempt. New pairings are held off for pairAcceptDelay after that (returning
-	// the standard 101), mirroring a real bridge waiting for the link-button tap.
-	pairMu        sync.Mutex
-	firstPairSeen time.Time
-	// pairAcceptDelay defers auto-accepting the TV's first pairing (measured from
-	// the first attempt); defaults to defaultPairAcceptDelay, overridable in tests.
-	pairAcceptDelay time.Duration
+	// pairing defers auto-accepting the TV's first pairing, mirroring a real bridge
+	// waiting for the link-button tap.
+	pairing *pairingGate
 }
 
 // defaultPairAcceptDelay is how long relume defers auto-accepting the TV's first
@@ -140,8 +90,9 @@ const defaultDTLSFallbackTimeout = 5 * time.Second
 // New creates the CLIP-v1 server.
 func New(cfg *config.Config, advIP string, httpPort int, log *slog.Logger) *Server {
 	return &Server{cfg: cfg, advIP: advIP, httpPort: httpPort, log: log,
-		lightsTouched: map[string]struct{}{}, pairAcceptDelay: defaultPairAcceptDelay,
-		dtlsFallbackTimeout: defaultDTLSFallbackTimeout}
+		activity: newActivityTracker(log),
+		stream:   newStreamState(defaultDTLSFallbackTimeout),
+		pairing:  newPairingGate(defaultPairAcceptDelay)}
 }
 
 // SetDTLSFallbackTimeout overrides how long relume waits for the TV's DTLS stream
@@ -149,75 +100,26 @@ func New(cfg *config.Config, advIP string, httpPort int, log *slog.Logger) *Serv
 // -entertainment-dtls-timeout flag). A non-positive value keeps the default. Call
 // before serving.
 func (s *Server) SetDTLSFallbackTimeout(d time.Duration) {
-	if d > 0 {
-		s.dtlsFallbackTimeout = d
-	}
+	s.stream.setFallbackTimeout(d)
 }
 
 // confirmsEntertainment reports whether relume should confirm the TV's stream
-// activation for real: in entertainment mode (unless it has fallen back to REST,
-// see dtlsFallback), or under the diagnostic probe.
+// activation for real: in entertainment mode, unless it has fallen back to REST
+// (see streamState.fallback).
 func (s *Server) confirmsEntertainment() bool {
-	return (s.EntertainmentMode || s.EntProbe) && !s.dtlsFallback.Load()
-}
-
-// armDTLSWatchdog starts (or restarts) the fallback timer after relume confirms a
-// stream activation in entertainment mode. If the TV does not open its DTLS stream
-// (MarkDTLSStreamUp) before it fires, relume falls back to REST-follow. No-op under
-// the probe or once already fallen back.
-func (s *Server) armDTLSWatchdog() {
-	if !s.EntertainmentMode || s.dtlsFallback.Load() || s.dtlsStreamUp.Load() {
-		return
-	}
-	s.dtlsMu.Lock()
-	defer s.dtlsMu.Unlock()
-	if s.dtlsWatchdog != nil {
-		s.dtlsWatchdog.Stop()
-	}
-	s.log.Info("entertainment: activation confirmed, awaiting TV DTLS stream on :2100",
-		"fallback_in", s.dtlsFallbackTimeout.String())
-	s.dtlsWatchdog = time.AfterFunc(s.dtlsFallbackTimeout, s.dtlsWatchdogFired)
-}
-
-// disarmDTLSWatchdog cancels a pending fallback timer.
-func (s *Server) disarmDTLSWatchdog() {
-	s.dtlsMu.Lock()
-	defer s.dtlsMu.Unlock()
-	if s.dtlsWatchdog != nil {
-		s.dtlsWatchdog.Stop()
-		s.dtlsWatchdog = nil
-	}
+	return s.EntertainmentMode && !s.stream.inFallback()
 }
 
 // MarkDTLSStreamUp records that the TV opened its DTLS entertainment stream — it
 // cancels the fallback watchdog. Wired to the entertainment receiver's OnStreamStart.
 func (s *Server) MarkDTLSStreamUp() {
-	s.dtlsStreamUp.Store(true)
-	s.disarmDTLSWatchdog()
-	s.log.Info("entertainment: TV DTLS stream up — entertainment path active")
+	s.stream.markStreamUp(s.log)
 }
 
 // MarkDTLSStreamDown records that the TV's DTLS stream closed. Wired to the
 // receiver's OnStreamStop so a later re-activation can arm the watchdog again.
 func (s *Server) MarkDTLSStreamDown() {
-	s.dtlsStreamUp.Store(false)
-}
-
-// dtlsWatchdogFired is invoked when the TV confirmed activation but never opened the
-// DTLS stream in time. It flips relume (stickily) back to REST-follow: subsequent
-// activations get the generic ack and GET /groups/1 reports the stream inactive, so
-// the TV resumes per-light PUTs.
-func (s *Server) dtlsWatchdogFired() {
-	if s.dtlsStreamUp.Load() || s.dtlsFallback.Swap(true) {
-		return // stream came up in the meantime, or already fell back
-	}
-	s.streamMu.Lock()
-	s.streamActive = false
-	s.streamOwner = ""
-	s.streamMu.Unlock()
-	s.log.Warn("entertainment: TV did NOT open the DTLS stream in time — FALLING BACK to REST-follow "+
-		"(re-acking activation as inactive so the TV resumes per-light PUTs)",
-		"timeout", s.dtlsFallbackTimeout.String())
+	s.stream.markStreamDown()
 }
 
 // SetLightProvider registers the source for the light list (Bridge Pro backend).
@@ -358,67 +260,25 @@ func isGroupActionWrite(r *http.Request) bool {
 
 // recordLightWrite accumulates one Ambilight light-state write for the periodic
 // summary emitted by LogActivitySummary.
-func (s *Server) recordLightWrite(id string) {
-	s.activityMu.Lock()
-	s.lightWrites++
-	s.lightsTouched[id] = struct{}{}
-	s.activityMu.Unlock()
-}
+func (s *Server) recordLightWrite(id string) { s.activity.recordLightWrite(id) }
 
 // recordGroupActionWrite accumulates one group-action write for the summary.
-func (s *Server) recordGroupActionWrite() {
-	s.activityMu.Lock()
-	s.groupActionWrites++
-	s.activityMu.Unlock()
-}
+func (s *Server) recordGroupActionWrite() { s.activity.recordGroupActionWrite() }
 
 // MarkActivity stamps the most-recent-activity time from a non-REST source — the
 // entertainment DTLS stream. In entertainment mode the TV streams frames over DTLS
 // instead of REST writes, so without this the idle-off monitor (which watches
 // LastActivity) would treat an actively-streaming TV as idle and flash the lights
 // off mid-stream. The stream stopping then correctly lets idle-off fire.
-func (s *Server) MarkActivity() {
-	s.activityMu.Lock()
-	s.lastWriteAt = time.Now()
-	s.activityMu.Unlock()
-}
-
-// idleGapLogFloor is the smallest inter-write gap worth logging when gap tracing
-// is on. It exists to calibrate the idle-off timeout: during a real viewing
-// session the largest legitimate gap (static/dark/paused scenes) must stay well
-// below the configured -idle-off-timeout.
-const idleGapLogFloor = time.Second
-
-// gapTrace gates the temporary inter-write gap log used to calibrate the
-// idle-off timeout. It is a dedicated env var (not -debug) so a calibration run
-// is not buried under per-request http rx/tx spam: set RELUME_GAP_TRACE=1 and
-// grep "ambilight write gap". Remove once the timeout default is settled.
-var gapTrace = os.Getenv("RELUME_GAP_TRACE") != ""
+func (s *Server) MarkActivity() { s.activity.markActivity() }
 
 // recordWriteTime stamps the time of an Ambilight light-state write for the
-// idle-off monitor (independent of Debug). With RELUME_GAP_TRACE set it also logs
-// the gap since the previous write when it exceeds idleGapLogFloor, to calibrate
-// the idle-off timeout against the TV's real maximum legitimate pause.
-func (s *Server) recordWriteTime() {
-	now := time.Now()
-	s.activityMu.Lock()
-	prev := s.lastWriteAt
-	s.lastWriteAt = now
-	s.activityMu.Unlock()
-	if gapTrace && !prev.IsZero() {
-		if gap := now.Sub(prev); gap >= idleGapLogFloor {
-			s.log.Info("ambilight write gap", "gap", gap.Round(time.Millisecond).String())
-		}
-	}
-}
+// idle-off monitor (independent of Debug).
+func (s *Server) recordWriteTime() { s.activity.recordWriteTime() }
 
 // LastActivity returns the time of the most recent Ambilight light-state write
 // (zero if none yet). Used by the idle-off monitor.
-func (s *Server) LastActivity() time.Time {
-	s.activityMu.Lock()
-	defer s.activityMu.Unlock()
-	return s.lastWriteAt
-}
+func (s *Server) LastActivity() time.Time { return s.activity.lastActivity() }
 
 // LogActivitySummary logs a rollup of the accumulated Ambilight light-state
 // writes every interval (only when there was activity), then resets the counters.
@@ -439,13 +299,9 @@ func (s *Server) LogActivitySummary(ctx context.Context, interval time.Duration)
 // flushActivity logs the accumulated Ambilight light-state writes (if any) and
 // resets the counters. window is the period the counts cover.
 func (s *Server) flushActivity(window time.Duration) {
-	s.activityMu.Lock()
-	writes, groupWrites, lights := s.lightWrites, s.groupActionWrites, len(s.lightsTouched)
-	lastWrite := s.lastWriteAt
-	s.lightWrites = 0
-	s.groupActionWrites = 0
-	s.lightsTouched = map[string]struct{}{}
-	s.activityMu.Unlock()
+	snap := s.activity.snapshotAndReset()
+	writes, groupWrites, lights := snap.lightWrites, snap.groupActionWrites, snap.lights
+	lastWrite := snap.lastWriteAt
 	total := writes + groupWrites
 	if total == 0 {
 		return
@@ -530,16 +386,7 @@ func (s *Server) isTVRequest(r *http.Request) bool {
 }
 
 func (s *Server) handleDescription(w http.ResponseWriter, r *http.Request) {
-	relumeVariant := r.URL.Query().Get("relume")
-	// relume=ms1 normally changes the descriptor body to MediaServer. The
-	// MediaServerBasicBody experiment keeps that followed URL but serves Basic:1.
-	// Other relume query variants keep the Hue Basic body and short cache headers.
-	mediaServerAlias := s.MediaServerAlias && relumeVariant == "ms1" && !s.MediaServerBasicBody
-	xml, err := upnp.RenderWithOptions(s.cfg.Identity, s.advIP, s.httpPort, upnp.Options{
-		Profile:            s.IdentityProfile,
-		DescriptionProfile: s.DescriptionProfile,
-		MediaServerAlias:   mediaServerAlias,
-	})
+	xml, err := upnp.Render(s.cfg.Identity, s.advIP, s.httpPort)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -548,12 +395,8 @@ func (s *Server) handleDescription(w http.ResponseWriter, r *http.Request) {
 	// serve description.xml as text/xml. application/xml is suspected to make the
 	// Ambilight TV reject the descriptor and stop before POST /api.
 	w.Header().Set("Content-Type", "text/xml")
-	w.Header().Set("Server", upnp.ServerHeader(s.IdentityProfile))
-	if relumeVariant != "" {
-		w.Header().Set("Cache-Control", "max-age=1")
-	} else {
-		w.Header().Set("Cache-Control", "max-age=100")
-	}
+	w.Header().Set("Server", upnp.ServerHeaderDefault)
+	w.Header().Set("Cache-Control", "max-age=100")
 	io.WriteString(w, xml)
 }
 
@@ -593,13 +436,7 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 	// auto-accepts regardless; this is cosmetic, not a requirement). The TV polls
 	// POST /api and keeps trying (it waits up to ~30s), so returning the standard
 	// 101 until the window elapses just delays acceptance without aborting the TV.
-	s.pairMu.Lock()
-	if s.firstPairSeen.IsZero() {
-		s.firstPairSeen = time.Now()
-	}
-	waited := time.Since(s.firstPairSeen)
-	s.pairMu.Unlock()
-	if waited < s.pairAcceptDelay {
+	if s.pairing.shouldDefer() {
 		writeError(w, 101, "", "link button not pressed")
 		return
 	}
@@ -637,10 +474,6 @@ func (s *Server) handleShortConfig(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	if s.IdentityProfile == "ambilight" && !s.cfg.HasApiUser(r.PathValue("user")) {
-		writeJSON(w, s.shortConfig())
-		return
-	}
 	if !s.authorized(w, r) {
 		return
 	}
@@ -650,13 +483,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 // shortConfig builds the config object; modelid MUST be BSB002.
 func (s *Server) shortConfig() map[string]any {
 	id := s.cfg.Identity
-	datastoreVersion := "131"
-	if s.IdentityProfile == "ambilight" {
-		datastoreVersion = "126"
-	}
 	return map[string]any{
 		"name":             "Relume",
-		"datastoreversion": datastoreVersion,
+		"datastoreversion": "131",
 		"swversion":        "1967054020",
 		"apiversion":       "1.67.0",
 		"mac":              id.MAC(),
@@ -771,18 +600,17 @@ func (s *Server) bridgeGroup(id string) map[string]any {
 		groupType = "LightGroup"
 		name = "Group 0"
 	}
-	// Default: inactive stream. Under the entertainment probe, reflect the
-	// activation the TV requested so it treats the stream as live and proceeds to
-	// open the DTLS connection (which the :2100 probe then observes).
+	// Default: inactive stream. In entertainment mode, reflect the activation the TV
+	// requested so it treats the stream as live and proceeds to open the DTLS
+	// connection (which the :2100 receiver then services).
 	var streamActive bool
 	var streamOwner any
 	if s.confirmsEntertainment() && id == "1" {
-		s.streamMu.Lock()
-		streamActive = s.streamActive
-		if s.streamOwner != "" {
-			streamOwner = s.streamOwner
+		active, owner := s.stream.snapshot()
+		streamActive = active
+		if owner != "" {
+			streamOwner = owner
 		}
-		s.streamMu.Unlock()
 	}
 	return map[string]any{
 		"name":   name,
@@ -830,9 +658,15 @@ func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, []map[string]any{{"success": map[string]any{"id": "1"}}})
 }
 
-// handleGroupAction is the groups REST path. Full group/entertainment support
-// follows in M4; for now the request is logged and acknowledged so that the TV
-// does not abort.
+// handleGroupAction is the groups REST path (PUT /api/{user}/groups/{id}/action).
+// The request is logged and acknowledged but deliberately NOT forwarded to the Pro.
+// Dropping group-action writes is intentional and safe for the target Ambilight TV:
+// the measured TV drives lights exclusively via per-light PUT /lights/{id}/state, so
+// it never relies on the group-action path. Per-light forwarding is the supported
+// control path. The recordGroupActionWrite tally (incremented in the request
+// middleware, not here) exists precisely to surface the group-action path being
+// exercised unexpectedly — if that counter ever moves on a real TV, the assumption
+// above no longer holds and this handler must forward.
 func (s *Server) handleGroupAction(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(w, r) {
 		return
@@ -847,11 +681,11 @@ func (s *Server) handleGroupAction(w http.ResponseWriter, r *http.Request) {
 // (PUT /groups/{id} with {"stream":{"active":true}}) — the entry into the
 // entertainment path (M4).
 //
-// Under the entertainment probe, a stream-activation PUT is confirmed with the
-// real v1 success shape ([{"success":{"/groups/1/stream/active":true}}]) and the
-// group's stream state is updated, so the TV treats activation as accepted and
-// goes on to open the DTLS stream (which the :2100 probe observes). Without the
-// probe the legacy log-and-ack behavior is kept.
+// In entertainment mode, a stream-activation PUT is confirmed with the real v1
+// success shape ([{"success":{"/groups/1/stream/active":true}}]) and the group's
+// stream state is updated, so the TV treats activation as accepted and goes on to
+// open the DTLS stream (which the :2100 receiver services). In REST mode the legacy
+// log-and-ack behavior is kept.
 func (s *Server) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(w, r) {
 		return
@@ -863,23 +697,16 @@ func (s *Server) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
 	if s.confirmsEntertainment() {
 		if active, ok := streamActiveFromBody(body); ok {
 			owner := r.PathValue("user")
-			s.streamMu.Lock()
-			s.streamActive = active
-			if active {
-				s.streamOwner = owner
-			} else {
-				s.streamOwner = ""
-			}
-			s.streamMu.Unlock()
+			s.stream.setActive(active, owner)
 			s.log.Info("ENTERTAINMENT stream activation requested by TV",
 				"group", id, "active", active, "owner", owner)
 			// Arm the fallback watchdog on activation (entertainment mode only): if the
 			// TV confirms here but never opens the DTLS stream, relume reverts to
 			// REST-follow. A deactivation cancels any pending watchdog.
 			if active {
-				s.armDTLSWatchdog()
+				s.stream.armWatchdog(s.EntertainmentMode, s.log)
 			} else {
-				s.disarmDTLSWatchdog()
+				s.stream.disarmWatchdog()
 			}
 			writeJSON(w, []map[string]any{{"success": map[string]any{
 				"/groups/" + id + "/stream/active": active,

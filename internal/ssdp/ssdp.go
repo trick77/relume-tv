@@ -13,12 +13,12 @@ import (
 	"time"
 
 	"github.com/trick77/relume/internal/config"
+	"github.com/trick77/relume/internal/netutil"
 	"github.com/trick77/relume/internal/upnp"
 )
 
 const (
 	multicastAddr = "239.255.255.250:1900"
-	mediaServerST = "urn:schemas-upnp-org:device:MediaServer:1"
 	notifyEvery   = 60 * time.Second
 )
 
@@ -36,16 +36,6 @@ type Responder struct {
 	BurstDuration time.Duration
 	// BurstInterval is the interval used during the diagnostic burst.
 	BurstInterval time.Duration
-	// IdentityProfile selects experimental wire-identity compatibility tweaks.
-	// Empty keeps the default; "ambilight" matches the Ambilight-specific
-	// OSS emulator; "hass" matches Home Assistant emulated-hue.
-	IdentityProfile string
-	// MediaServerAlias also advertises/responds as UPnP MediaServer:1. Some
-	// Philips Android TVs only emit MediaServer searches during Hue+Ambilight scan.
-	MediaServerAlias bool
-	// DescriptorVariants adds extra query-scoped LOCATION URLs under the
-	// MediaServer ST so one TV scan can reveal which descriptor body it fetches.
-	DescriptorVariants bool
 }
 
 // New creates a Responder. advIP is the IP advertised in the LOCATION header
@@ -61,7 +51,7 @@ func (r *Responder) Run(ctx context.Context) error {
 	// On multi-NIC hosts, listen specifically on the interface that carries the
 	// advertised IP — otherwise Go only listens on the system default interface,
 	// which is not necessarily on the TV's network.
-	iface, err := interfaceForIP(r.advIP)
+	iface, err := netutil.InterfaceForIP(r.advIP)
 	if err != nil {
 		r.log.Warn("ssdp: interface for advertise IP not found, using default", "advIP", r.advIP, "err", err)
 	} else {
@@ -140,34 +130,7 @@ func parseHeaders(msg string) map[string]string {
 }
 
 func (r *Responder) serverHeader() string {
-	return upnp.ServerHeader(r.IdentityProfile)
-}
-
-// interfaceForIP returns the network interface that carries the given IP.
-func interfaceForIP(ip string) (*net.Interface, error) {
-	target := net.ParseIP(ip)
-	if target == nil {
-		return nil, fmt.Errorf("invalid IP %q", ip)
-	}
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return nil, err
-	}
-	for i := range ifaces {
-		if ifaces[i].Flags&net.FlagMulticast == 0 || ifaces[i].Flags&net.FlagUp == 0 {
-			continue
-		}
-		addrs, aerr := ifaces[i].Addrs()
-		if aerr != nil {
-			continue
-		}
-		for _, a := range addrs {
-			if ipn, ok := a.(*net.IPNet); ok && ipn.IP.Equal(target) {
-				return &ifaces[i], nil
-			}
-		}
-	}
-	return nil, fmt.Errorf("no multicast-capable interface with IP %s", ip)
+	return upnp.ServerHeaderDefault
 }
 
 // handle answers M-SEARCH queries; everything else is ignored.
@@ -181,7 +144,7 @@ func (r *Responder) handle(conn *net.UDPConn, src *net.UDPAddr, data []byte) {
 	}
 	h := parseHeaders(msg)
 	if r.Debug {
-		r.log.Info("ssdp: M-SEARCH answered", "to", src.String(), "st", h["ST"], "mediaServerAlias", r.MediaServerAlias)
+		r.log.Info("ssdp: M-SEARCH answered", "to", src.String(), "st", h["ST"])
 	}
 	// We answer broadly (without strict ST matching), as real bridges do — the
 	// TV filters by LOCATION/description.xml. An immediate reply is important
@@ -225,30 +188,22 @@ func (r *Responder) searchResponses() []string {
 }
 
 type ssdpVariant struct {
-	st       string
-	nt       string
-	usn      string
-	location string
+	st  string
+	nt  string
+	usn string
 }
 
 func (v ssdpVariant) maxAge() int {
-	if v.st == mediaServerST || v.nt == mediaServerST {
-		return 1
-	}
 	return 100
 }
 
-func (r *Responder) location(v ssdpVariant) string {
-	location := fmt.Sprintf("http://%s:%d/description.xml", r.advIP, r.httpPort)
-	if v.location != "" {
-		return location + "?relume=" + v.location
-	}
-	return location
+func (r *Responder) location(ssdpVariant) string {
+	return fmt.Sprintf("http://%s:%d/description.xml", r.advIP, r.httpPort)
 }
 
 func (r *Responder) ssdpVariants() []ssdpVariant {
-	uuid := r.id.UUIDForProfile(r.IdentityProfile)
-	variants := []ssdpVariant{
+	uuid := r.id.UUID()
+	return []ssdpVariant{
 		{st: "upnp:rootdevice", nt: "upnp:rootdevice", usn: "uuid:" + uuid + "::upnp:rootdevice"},
 		{st: "uuid:" + uuid, nt: "uuid:" + uuid, usn: "uuid:" + uuid},
 		{
@@ -257,25 +212,6 @@ func (r *Responder) ssdpVariants() []ssdpVariant {
 			usn: "uuid:" + uuid + "::urn:schemas-upnp-org:device:basic:1",
 		},
 	}
-	if r.MediaServerAlias {
-		variants = append(variants, ssdpVariant{
-			st:  mediaServerST,
-			nt:  mediaServerST,
-			usn: "uuid:" + uuid + "::" + mediaServerST,
-			// ms1 serves a MediaServer descriptor body for TVs that only scan DLNA STs.
-			location: "ms1",
-		})
-	}
-	if r.MediaServerAlias && r.DescriptorVariants {
-		variants = append(variants, ssdpVariant{
-			st:  mediaServerST,
-			nt:  mediaServerST,
-			usn: "uuid:" + uuid + "::" + mediaServerST,
-			// basic1 keeps the MediaServer SSDP trigger but serves a Hue Basic descriptor.
-			location: "basic1",
-		})
-	}
-	return variants
 }
 
 // notifyLoop periodically sends NOTIFY ssdp:alive to the multicast.
