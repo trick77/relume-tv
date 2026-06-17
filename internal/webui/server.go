@@ -1,0 +1,122 @@
+package webui
+
+import (
+	"context"
+	"embed"
+	"encoding/json"
+	"io/fs"
+	"log/slog"
+	"net/http"
+	"time"
+)
+
+//go:embed assets/*
+var assetsFS embed.FS
+
+// Server is the optional web UI HTTP server. It is separate from the TV-facing
+// clipv1 server and only created/started when -ui-port is non-zero.
+type Server struct {
+	addr  string
+	hub   *Hub
+	src   StateSource
+	flash func() error
+	log   *slog.Logger
+	http  *http.Server
+}
+
+// NewServer builds the UI server. flash may be nil, which disables the action.
+func NewServer(addr string, hub *Hub, src StateSource, flash func() error, log *slog.Logger) *Server {
+	return &Server{addr: addr, hub: hub, src: src, flash: flash, log: log}
+}
+
+// Handler returns the routed HTTP handler.
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/state", s.handleState)
+	mux.HandleFunc("GET /api/events", s.handleEvents)
+	mux.HandleFunc("POST /api/actions/flash", s.handleFlash)
+
+	sub, _ := fs.Sub(assetsFS, "assets")
+	mux.Handle("/", http.FileServer(http.FS(sub)))
+	return mux
+}
+
+func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(BuildSnapshot(s.src))
+}
+
+func (s *Server) handleFlash(w http.ResponseWriter, _ *http.Request) {
+	if s.flash == nil {
+		http.Error(w, "flash action unavailable", http.StatusNotFound)
+		return
+	}
+	if err := s.flash(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	write := func(f Frame) {
+		b, _ := json.Marshal(f)
+		_, _ = w.Write([]byte("data: "))
+		_, _ = w.Write(b)
+		_, _ = w.Write([]byte("\n\n"))
+		flusher.Flush()
+	}
+
+	// Initial paint: a fresh snapshot, then the buffered event tail.
+	snap := BuildSnapshot(s.src)
+	write(Frame{Kind: "snapshot", Snapshot: &snap})
+	for _, e := range s.hub.Events() {
+		e := e
+		write(Frame{Kind: "event", Event: &e})
+	}
+
+	ch, cancel := s.hub.Subscribe()
+	defer cancel()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case f, ok := <-ch:
+			if !ok {
+				return
+			}
+			write(f)
+		}
+	}
+}
+
+// Run serves until ctx is cancelled. It returns a non-nil error only on a real
+// bind/serve failure (never http.ErrServerClosed), so the caller can log it
+// without taking down the headless service.
+func (s *Server) Run(ctx context.Context) error {
+	s.http = &http.Server{Addr: s.addr, Handler: s.Handler()}
+	errc := make(chan error, 1)
+	go func() {
+		if err := s.http.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errc <- err
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = s.http.Shutdown(shutCtx)
+		return nil
+	case err := <-errc:
+		return err
+	}
+}
