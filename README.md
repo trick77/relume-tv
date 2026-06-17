@@ -25,7 +25,7 @@ paths and v1 HTTP API surface that feature expects, so the TV can no longer find
 directly — and because Philips Hue (Signify) and the TV division (TP Vision) don't coordinate,
 there is no official fix.
 
-## What it does
+## What this does
 
 Relume sits between the TV and the Bridge Pro: to the TV it impersonates an old gen-2 bridge
 (BSB002) speaking the v1 HTTP API, and it proxies every request to the real Bridge Pro over
