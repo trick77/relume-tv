@@ -94,8 +94,8 @@ State (bridge identity, TV tokens, **Bridge Pro app key + client key**) lives in
 - **`-ui-port`** &nbsp;·&nbsp; default `0` (disabled) — Optional web UI port. `0` keeps relume headless (the default); set a port to enable the setup assistant + live status dashboard. Recommended: `33300`. Must differ from `-http-port` (80). **No authentication — only enable it on a trusted network**, since with `network_mode: host` the port is reachable by anyone on the LAN.
 - **`-debug`** &nbsp;·&nbsp; default off — SSDP/HTTP diagnostics + mDNS observer.
 
-Discovery-debugging flags (`-identity-profile`, `-ssdp-*`, `-description-profile`,
-`-discovery-burst-*`) are documented in [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+Discovery-debugging flags (`-discovery-burst-*`) are documented in
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ## Troubleshooting
 

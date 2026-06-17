@@ -1,11 +1,9 @@
 package clipv1
 
-import "time"
-
 // UIStatus reports the current control state for the web UI (read-only).
 func (s *Server) UIStatus() (mode string, dtlsUp, fallback bool) {
-	dtlsUp = s.dtlsStreamUp.Load()
-	fb := s.dtlsFallback.Load()
+	fb := s.stream.inFallback()
+	dtlsUp = s.stream.isUp()
 	switch {
 	case s.EntertainmentMode && !fb:
 		mode = "entertainment"
@@ -22,16 +20,7 @@ func (s *Server) PendingTVPairing() bool {
 	if len(s.cfg.PairedDeviceTypes()) > 0 {
 		return false
 	}
-	s.pairMu.Lock()
-	defer s.pairMu.Unlock()
-	if s.firstPairSeen.IsZero() {
-		return false
-	}
-	delay := s.pairAcceptDelay
-	if delay == 0 {
-		delay = defaultPairAcceptDelay
-	}
-	return time.Since(s.firstPairSeen) < delay
+	return s.pairing.pending()
 }
 
 // LightsV1Snapshot returns the v1 light map for the web UI, or ok=false when no

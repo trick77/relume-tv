@@ -34,10 +34,10 @@ func TestUIStatus_EntertainmentStreamUp(t *testing.T) {
 
 func TestPendingTVPairing_WindowOpen(t *testing.T) {
 	s := newUIServer()
-	s.pairAcceptDelay = time.Minute
-	s.pairMu.Lock()
-	s.firstPairSeen = time.Now()
-	s.pairMu.Unlock()
+	s.pairing.mu.Lock()
+	s.pairing.acceptDelay = time.Minute
+	s.pairing.firstPairSeen = time.Now()
+	s.pairing.mu.Unlock()
 	if !s.PendingTVPairing() {
 		t.Fatal("expected pending pairing within the accept window")
 	}
