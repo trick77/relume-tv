@@ -28,15 +28,17 @@ identity, pairing, and the two control modes.
 ## Requirements
 
 - **A Philips Ambilight TV** with the built-in Ambilight+Hue feature — the TV is what
-  discovers and drives the bridge.
+  discovers and drives the bridge. (Developed and tested against a **Philips 65OLED806**,
+  Android TV 11; other Ambilight models may behave differently.)
 - **A Hue Bridge Pro (BSB003)**, already set up with your lights and reachable on the LAN.
 - **A Linux host** to run Relume on. Discovery uses multicast (mDNS/SSDP), so the container
   needs `network_mode: host` — **Docker Desktop on macOS/Windows won't work**, its
   host-networking mode doesn't reliably carry the multicast traffic.
 - **TV, Relume host, and Bridge Pro on the same L2 network / VLAN**, with multicast allowed
   (no client/AP isolation between them).
-- **TCP port 80 free on the host** — Relume emulates a gen-2 bridge, which speaks on `:80`.
-  Pick another with `-http-port`; under rootless Docker see the
+- **TCP port 80 free on the host** — Relume emulates a gen-2 bridge, which the TV reaches on
+  `:80`. The TV **hardcodes** this port and ignores any port advertised over mDNS/SSDP, so `:80`
+  is effectively mandatory — don't move it. Under rootless Docker, see the
   [port-80 note](docs/TROUBLESHOOTING.md#rootless-docker-and-port-80).
 
 ## Quick start (Docker)
@@ -77,7 +79,7 @@ State (bridge identity, TV tokens, **Bridge Pro app key + client key**) lives in
 ### Flags (`serve`)
 
 - **`-mode`** &nbsp;·&nbsp; default `rest` — Control mode: `rest` (per-light REST-follow) or `entertainment` (low-latency DTLS stream to the Pro). See [docs/DESIGN.md](docs/DESIGN.md#control-modes).
-- **`-http-port`** &nbsp;·&nbsp; default `80` — HTTP port the TV connects to.
+- **`-http-port`** &nbsp;·&nbsp; default `80` — HTTP port the TV connects to. The TV hardcodes `:80` and ignores any other advertised port, so changing this will almost certainly break discovery/pairing — leave it at `80`.
 - **`-advertise-ip`** &nbsp;·&nbsp; default auto — IP advertised via mDNS/SSDP; set it on a multi-homed host.
 - **`-bridge-ip`** — Bridge Pro IP (skips cloud discovery).
 - **`-idle-off-timeout`** &nbsp;·&nbsp; default `30s` — When the TV stops driving the lights for this long, flash them and turn them off (the TV sends no off signal, it just goes silent). `0` disables.
