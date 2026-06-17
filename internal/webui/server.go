@@ -16,17 +16,40 @@ var assetsFS embed.FS
 // Server is the optional web UI HTTP server. It is separate from the TV-facing
 // clipv1 server and only created/started when -ui-port is non-zero.
 type Server struct {
-	addr  string
-	hub   *Hub
-	src   StateSource
-	flash func() error
-	log   *slog.Logger
-	http  *http.Server
+	addr         string
+	hub          *Hub
+	src          StateSource
+	flash        func() error
+	log          *slog.Logger
+	http         *http.Server
+	snapInterval time.Duration
 }
 
 // NewServer builds the UI server. flash may be nil, which disables the action.
 func NewServer(addr string, hub *Hub, src StateSource, flash func() error, log *slog.Logger) *Server {
-	return &Server{addr: addr, hub: hub, src: src, flash: flash, log: log}
+	return &Server{addr: addr, hub: hub, src: src, flash: flash, log: log, snapInterval: time.Second}
+}
+
+// runSnapshotLoop periodically publishes a fresh snapshot to the hub so connected
+// dashboards update live (lights, mode, stream health, pairing state). Without
+// this, an SSE client only ever sees the single snapshot built at connect time
+// plus log events. The cadence is coarse on purpose — this is a status view, not
+// a frame mirror.
+func (s *Server) runSnapshotLoop(ctx context.Context) {
+	interval := s.snapInterval
+	if interval <= 0 {
+		interval = time.Second
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.hub.SetSnapshot(BuildSnapshot(s.src))
+		}
+	}
 }
 
 // Handler returns the routed HTTP handler.
@@ -104,6 +127,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // without taking down the headless service.
 func (s *Server) Run(ctx context.Context) error {
 	s.http = &http.Server{Addr: s.addr, Handler: s.Handler()}
+	go s.runSnapshotLoop(ctx)
 	errc := make(chan error, 1)
 	go func() {
 		if err := s.http.ListenAndServe(); err != nil && err != http.ErrServerClosed {

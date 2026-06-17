@@ -65,6 +65,31 @@ func TestServer_FlashInvokesCallback(t *testing.T) {
 	}
 }
 
+func TestServer_PeriodicSnapshotPublished(t *testing.T) {
+	hub := NewHub(8)
+	srv := NewServer(":0", hub, fakeSource{}, nil, discardLog())
+	srv.snapInterval = 10 * time.Millisecond
+
+	ch, cancel := hub.Subscribe()
+	defer cancel()
+
+	ctx, cancelCtx := context.WithCancel(context.Background())
+	defer cancelCtx()
+	go srv.runSnapshotLoop(ctx)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case f := <-ch:
+			if f.Kind == "snapshot" && f.Snapshot != nil && f.Snapshot.Version == "1.4.2" {
+				return // a snapshot was published over time, not just on connect
+			}
+		case <-deadline:
+			t.Fatal("no periodic snapshot frame received — dashboard would not update live")
+		}
+	}
+}
+
 func TestServer_SSEStreamsInitialSnapshot(t *testing.T) {
 	hub := NewHub(8)
 	srv := httptest.NewServer(NewServer(":0", hub, fakeSource{}, nil, discardLog()).Handler())
