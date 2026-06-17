@@ -127,6 +127,9 @@ which must differ from the TV-facing `-http-port`). Design notes:
   (asserted by a test).
 - **No authentication** — with `network_mode: host` the port is reachable on the LAN, so the UI
   assumes a trusted network. A bind/serve failure is logged but never takes down the headless service.
+- **CSRF guard on the action.** The flash POST rejects requests whose `Origin` does not match the
+  server (browsers always send it cross-origin), closing the browser/DNS-rebinding path. A missing
+  `Origin` (curl / direct LAN access) is allowed — that path is already within the trusted-LAN model.
 
 See the design spec at [superpowers/specs/2026-06-17-web-ui-design.md](superpowers/specs/2026-06-17-web-ui-design.md).
 

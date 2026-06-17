@@ -65,6 +65,43 @@ func TestServer_FlashInvokesCallback(t *testing.T) {
 	}
 }
 
+func TestServer_FlashAllowsNoOrigin(t *testing.T) {
+	// No Origin header (curl / direct LAN access — accepted by the threat model).
+	called := false
+	srv := NewServer(":0", NewHub(8), fakeSource{}, func() error { called = true; return nil }, discardLog())
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/actions/flash", nil))
+	if rec.Code != http.StatusNoContent || !called {
+		t.Fatalf("no-Origin POST should be allowed: code=%d called=%v", rec.Code, called)
+	}
+}
+
+func TestServer_FlashAllowsSameOrigin(t *testing.T) {
+	called := false
+	srv := NewServer(":0", NewHub(8), fakeSource{}, func() error { called = true; return nil }, discardLog())
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/actions/flash", nil)
+	req.Host = "192.168.1.5:33300"
+	req.Header.Set("Origin", "http://192.168.1.5:33300")
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent || !called {
+		t.Fatalf("same-origin POST should be allowed: code=%d called=%v", rec.Code, called)
+	}
+}
+
+func TestServer_FlashRejectsCrossOrigin(t *testing.T) {
+	called := false
+	srv := NewServer(":0", NewHub(8), fakeSource{}, func() error { called = true; return nil }, discardLog())
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/actions/flash", nil)
+	req.Host = "192.168.1.5:33300"
+	req.Header.Set("Origin", "http://evil.example.com")
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || called {
+		t.Fatalf("cross-origin POST should be rejected: code=%d called=%v", rec.Code, called)
+	}
+}
+
 func TestServer_PeriodicSnapshotPublished(t *testing.T) {
 	hub := NewHub(8)
 	srv := NewServer(":0", hub, fakeSource{}, nil, discardLog())

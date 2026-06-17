@@ -69,9 +69,17 @@ func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(BuildSnapshot(s.src))
 }
 
-func (s *Server) handleFlash(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 	if s.flash == nil {
 		http.Error(w, "flash action unavailable", http.StatusNotFound)
+		return
+	}
+	// CSRF guard: reject a state-changing request whose Origin (always sent by
+	// browsers on cross-origin POSTs) does not match our own origin. A missing
+	// Origin (curl / direct LAN access) is allowed — that path is already part of
+	// the trusted-LAN threat model; this only closes the browser/DNS-rebinding hole.
+	if !sameOrigin(r) {
+		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 		return
 	}
 	if err := s.flash(); err != nil {
@@ -79,6 +87,17 @@ func (s *Server) handleFlash(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// sameOrigin reports whether r is safe to treat as same-origin for a
+// state-changing request: either no Origin header (non-browser client) or an
+// Origin matching this server's own host. The UI is served over plain HTTP.
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	return origin == "http://"+r.Host
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
