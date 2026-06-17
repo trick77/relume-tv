@@ -62,6 +62,11 @@ func BuildSnapshot(src StateSource) Snapshot {
 	paired, name, host, pinned := src.ProInfo()
 	mode, dtlsUp, fallback := src.ModeInfo()
 	tv := src.TVClients()
+	// Always emit arrays, never null: the frontend reads .length on these, so a
+	// nil slice (→ JSON null) would crash the setup wizard on a fresh install.
+	if tv == nil {
+		tv = []string{}
+	}
 
 	s := Snapshot{
 		Version:      src.Version(),
@@ -77,6 +82,7 @@ func BuildSnapshot(src StateSource) Snapshot {
 		BridgeName:   src.BridgeName(),
 		PendingTV:    src.PendingTVPairing(),
 		LastActivity: rfc3339(src.LastActivity()),
+		Lights:       []LightView{},
 	}
 
 	switch {

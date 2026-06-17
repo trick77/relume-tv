@@ -1,6 +1,8 @@
 package webui
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,6 +49,40 @@ func TestBuildSnapshot_MapsLightsAndDriven(t *testing.T) {
 	}
 	if s.LastActivity != "" {
 		t.Fatalf("zero time should render empty, got %q", s.LastActivity)
+	}
+}
+
+// emptySource models a fresh, unpaired install: no provider, no TV clients.
+type emptySource struct{}
+
+func (emptySource) Version() string                       { return "dev" }
+func (emptySource) StartedAt() time.Time                  { return time.Time{} }
+func (emptySource) ProInfo() (bool, string, string, bool) { return false, "", "", false }
+func (emptySource) TVClients() []string                   { return nil }
+func (emptySource) ModeInfo() (string, bool, bool)        { return "rest", false, false }
+func (emptySource) BridgeName() string                    { return "Philips Hue - ABCDEF" }
+func (emptySource) PendingTVPairing() bool                { return false }
+func (emptySource) LastActivity() time.Time               { return time.Time{} }
+func (emptySource) LightsV1() (map[string]any, bool)      { return nil, false }
+func (emptySource) UUIDForV1(string) (string, bool)       { return "", false }
+func (emptySource) DrivenUUIDs() []string                 { return nil }
+
+func TestBuildSnapshot_EmptyArraysNotNil(t *testing.T) {
+	s := BuildSnapshot(emptySource{})
+	// Lights and TVClients must marshal as [] (never null), or the frontend's
+	// .length access crashes the setup wizard on a fresh install.
+	if s.Lights == nil {
+		t.Fatal("Lights is nil — would serialize to JSON null and crash the wizard")
+	}
+	if s.TVClients == nil {
+		t.Fatal("TVClients is nil — would serialize to JSON null")
+	}
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"lights":[]`) || !strings.Contains(string(b), `"tvClients":[]`) {
+		t.Fatalf("expected empty arrays in JSON, got %s", b)
 	}
 }
 
