@@ -118,14 +118,39 @@ func (r *Receiver) handle(ctx context.Context, conn net.Conn) {
 	var (
 		mu          sync.Mutex
 		frames      uint64
+		dropped     uint64
 		last        *huestream.Frame
 		firstLogged bool
 	)
 	done := make(chan struct{})
 
+	// Decouple decode from forward. OnFrame (the sink that forwards to the Pro) must
+	// never block the reader: a stalled sink would back up the single reader goroutine
+	// and the kernel would silently drop UDP with no visibility. Frames flow through a
+	// small bounded queue handled by a separate forwarder goroutine; when the queue is
+	// full the newest frame is dropped (Ambilight frames are ephemeral — latest wins)
+	// and counted, so a slow sink degrades smoothly and observably rather than stalling.
+	const frameQueueSize = 8
+	var frameCh chan *huestream.Frame
+	fwdDone := make(chan struct{})
+	if r.OnFrame != nil {
+		frameCh = make(chan *huestream.Frame, frameQueueSize)
+		go func() {
+			defer close(fwdDone)
+			for f := range frameCh {
+				r.OnFrame(remote, f)
+			}
+		}()
+	} else {
+		close(fwdDone)
+	}
+
 	// Reader goroutine: decrypt + parse frames (~25/s) into shared state.
 	go func() {
 		defer close(done)
+		if frameCh != nil {
+			defer close(frameCh) // let the forwarder drain and exit
+		}
 		buf := make([]byte, 2048)
 		for {
 			n, rerr := conn.Read(buf)
@@ -140,8 +165,14 @@ func (r *Receiver) handle(ctx context.Context, conn net.Conn) {
 			if r.OnActivity != nil {
 				r.OnActivity()
 			}
-			if r.OnFrame != nil {
-				r.OnFrame(remote, f)
+			if frameCh != nil {
+				select {
+				case frameCh <- f:
+				default:
+					mu.Lock()
+					dropped++
+					mu.Unlock()
+				}
 			}
 			mu.Lock()
 			frames++
@@ -167,18 +198,19 @@ func (r *Receiver) handle(ctx context.Context, conn net.Conn) {
 		case <-ctx.Done():
 			return
 		case <-done:
+			<-fwdDone // let the forwarder drain queued frames before OnStreamStop
 			mu.Lock()
-			total := frames
+			total, drops := frames, dropped
 			mu.Unlock()
-			r.log.Info("entertainment stream closed", "from", remote, "frames_total", total)
+			r.log.Info("entertainment stream closed", "from", remote, "frames_total", total, "frames_dropped", drops)
 			return
 		case <-t.C:
 			mu.Lock()
-			total, f := frames, last
+			total, drops, f := frames, dropped, last
 			mu.Unlock()
 			if f != nil && total != prev {
 				r.log.Info("entertainment stream", "from", remote,
-					"frames_5s", total-prev, "channels", len(f.Channels),
+					"frames_5s", total-prev, "frames_dropped", drops, "channels", len(f.Channels),
 					"colorspace", f.ColorSpaceName(), "sample", sample(f))
 				prev = total
 			}
