@@ -16,12 +16,10 @@ import (
 // lightCacheTTL limits how often the Bridge Pro is queried for lights.
 const lightCacheTTL = 5 * time.Second
 
-// proClient is the subset of *bridgepro.Client the provider needs (read + control),
-// extracted so the optimistic control path can be tested without a live Bridge Pro.
-type proClient interface {
-	Lights() ([]bridgepro.Light, error)
-	SetLight(uuid string, v2body map[string]any) error
-}
+// proClient is the Pro read + control surface the provider needs. It aliases the
+// canonical bridgepro.ProController (defined in the producer package) so the
+// optimistic control path can be tested without a live Bridge Pro.
+type proClient = bridgepro.ProController
 
 // LightProvider implements clipv1.LightProvider on top of the Bridge Pro and
 // holds the v1→UUID mapping for control (REST fallback path).

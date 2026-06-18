@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -72,6 +73,53 @@ func TestReceiver_decodesStreamOverDTLS(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for a decoded frame")
+	}
+}
+
+// TestReceiver_slowSinkDropsFramesWithoutBlocking verifies the bounded queue (L2):
+// a slow OnFrame must not stall the reader — excess frames are dropped, not blocked,
+// so the reader keeps draining the socket. With a sink gated shut, far fewer frames
+// are delivered than were sent, and the reader still completes.
+func TestReceiver_slowSinkDropsFramesWithoutBlocking(t *testing.T) {
+	gate := make(chan struct{})
+	var delivered int32
+	r := &Receiver{
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		OnFrame: func(_ string, _ *huestream.Frame) {
+			<-gate // sink is blocked until released
+			atomic.AddInt32(&delivered, 1)
+		},
+	}
+
+	client, server := net.Pipe()
+	handleDone := make(chan struct{})
+	go func() {
+		r.handle(context.Background(), server)
+		close(handleDone)
+	}()
+
+	const sent = 40
+	frame := v1FrameLightsSixEleven()
+	for i := 0; i < sent; i++ {
+		if _, err := client.Write(frame); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+	client.Close() // reader sees EOF, closes the queue
+
+	close(gate) // release the sink; forwarder drains whatever is still queued
+	select {
+	case <-handleDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handle did not return")
+	}
+
+	got := atomic.LoadInt32(&delivered)
+	if got >= sent {
+		t.Fatalf("delivered %d of %d — expected the slow sink to drop frames", got, sent)
+	}
+	if got == 0 {
+		t.Fatalf("delivered 0 frames — the queue should still pass some through")
 	}
 }
 
