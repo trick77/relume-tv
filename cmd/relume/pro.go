@@ -49,10 +49,10 @@ func resolveProHost(bridgeIP, want string, discover func() ([]bridgepro.Discover
 	// Always log it (louder when several are present, since that is the case where
 	// blindly taking the first risks the wrong bridge on a multi-bridge LAN).
 	if len(bridges) > 1 {
-		log.Warn("hue bridge pro discovery: no stored discovery id, multiple bridges found — picking the first; pass -bridge-ip to disambiguate",
+		log.Warn("hue bridge pro discovery via Philips cloud (discovery.meethue.com): no stored discovery id, multiple bridges found — picking the first; pass -bridge-ip to disambiguate",
 			"count", len(bridges), "picked", bridges[0].InternalIPAddress)
 	} else {
-		log.Info("hue bridge pro discovery: no stored discovery id — picking the only discovered bridge",
+		log.Info("hue bridge pro discovery via Philips cloud (discovery.meethue.com): no stored discovery id — picking the only discovered bridge",
 			"picked", bridges[0].InternalIPAddress)
 	}
 	return bridges[0].InternalIPAddress, bridges[0].ID, nil
