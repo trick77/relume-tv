@@ -269,9 +269,9 @@ func (c *Config) save() error {
 	if c.path == "" {
 		return nil
 	}
-	if c.SchemaVersion == 0 {
-		c.SchemaVersion = CurrentSchemaVersion
-	}
+	// SchemaVersion is always stamped by Load (both the fresh and legacy-zero paths),
+	// and Load is the only constructor of *Config — so every config reaching save has
+	// it set. No defensive re-stamp needed here.
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return fmt.Errorf("serialize config: %w", err)
