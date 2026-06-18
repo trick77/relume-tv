@@ -1,14 +1,26 @@
 const app = document.getElementById("app");
 
-// Convert a CIE xy colour + brightness to an approximate sRGB string for the tile.
-function xyBriToRGB(x, y, bri) {
+// Convert a CIE xy colour to an approximate sRGB string for the tile. Brightness
+// is intentionally NOT used: the swatch shows the lamp's colour only. We fix the
+// luminance and normalise to the brightest channel so every hue renders at full,
+// consistent brightness regardless of how dim the lamp actually is.
+function xyToRGB(x, y) {
   if (!y) return "#1c1f28";
-  const Y = Math.max(bri, 1) / 254;
+  const Y = 1;
   const X = (Y / y) * x;
   const Z = (Y / y) * (1 - x - y);
   let r = X * 1.656492 - Y * 0.354851 - Z * 0.255038;
   let g = -X * 0.707196 + Y * 1.655397 + Z * 0.036152;
   let b = X * 0.051713 - Y * 0.121364 + Z * 1.011530;
+  // Drop out-of-gamut negatives, then scale to full brightness so only the hue
+  // matters — the lamp's brightness must not dim the swatch.
+  r = Math.max(r, 0);
+  g = Math.max(g, 0);
+  b = Math.max(b, 0);
+  const max = Math.max(r, g, b, 1e-6);
+  r /= max;
+  g /= max;
+  b /= max;
   const gamma = (c) => (c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055);
   [r, g, b] = [gamma(r), gamma(g), gamma(b)].map((c) => Math.round(Math.min(Math.max(c, 0), 1) * 255));
   return `rgb(${r},${g},${b})`;
@@ -104,11 +116,11 @@ function renderDashboard(s) {
   const shown = drivenLights.length > 0 ? drivenLights : s.lights;
   const lights = shown
     .map((l) => {
-      const col = l.on ? xyBriToRGB(l.x, l.y, l.bri) : "";
+      const col = l.on ? xyToRGB(l.x, l.y) : "";
       return `<div class="lamp ${l.driven ? "driven" : ""} ${l.on ? "" : "off"}">
         <div class="swatch" style="${l.on ? `background:${col};box-shadow:0 0 20px ${col}` : ""}"></div>
         <div class="nm">${esc(l.name)}</div>
-        <div class="st">${l.driven ? "driven by TV" : l.on ? "on" : "off"}</div></div>`;
+        <div class="st">${l.on ? "on" : "off"}</div></div>`;
     })
     .join("");
   const driven = drivenLights.length;
