@@ -1,6 +1,10 @@
 package webui
 
-import "time"
+import (
+	"sort"
+	"strconv"
+	"time"
+)
 
 // LightView is one light as the UI renders it: name, on/off, brightness, CIE xy
 // colour, and whether the TV is currently driving it.
@@ -144,6 +148,13 @@ func BuildSnapshot(src StateSource) Snapshot {
 			}
 			s.Lights = append(s.Lights, lv)
 		}
+		// lv1 is a map, so iteration order is non-deterministic. Sort by the
+		// numeric v1 ID for a stable, predictable light order in the UI.
+		sort.Slice(s.Lights, func(i, j int) bool {
+			ai, _ := strconv.Atoi(s.Lights[i].ID)
+			aj, _ := strconv.Atoi(s.Lights[j].ID)
+			return ai < aj
+		})
 	}
 	return s
 }
