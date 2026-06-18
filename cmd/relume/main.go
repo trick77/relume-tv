@@ -603,7 +603,14 @@ func autoPairPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, c
 		h, id, derr := resolveProHost(bridgeIP, "", bridgepro.Discover, log)
 		if derr == nil && h != "" {
 			host, discoveryID = h, id
-			log.Info("hue bridge pro discovered", "host", host)
+			// Make the source explicit: with no -bridge-ip the host comes from the
+			// Philips cloud (discovery.meethue.com), so a config-less relume still
+			// "knows" a bridge it never stored — that is the cloud cache, not local state.
+			source := "Philips cloud (discovery.meethue.com)"
+			if bridgeIP != "" {
+				source = "-bridge-ip"
+			}
+			log.Info("hue bridge pro discovered", "host", host, "via", source)
 			break
 		}
 		log.Warn("hue bridge pro not paired yet: not found via cloud discovery — power the hue bridge pro on, or pass -bridge-ip; retrying", "err", derr)
