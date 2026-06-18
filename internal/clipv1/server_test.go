@@ -427,6 +427,46 @@ func TestForwardLight_noProviderIsNoop(t *testing.T) {
 	s.ForwardLight("6", map[string]any{"on": true}) // must not panic with no provider
 }
 
+type fanoutProvider struct {
+	lights map[string]any
+	got    map[string]map[string]any
+}
+
+func (p *fanoutProvider) LightsV1() (map[string]any, error) { return p.lights, nil }
+func (p *fanoutProvider) SetLightV1(id string, state map[string]any) error {
+	if p.got == nil {
+		p.got = map[string]map[string]any{}
+	}
+	p.got[id] = state
+	return nil
+}
+
+func TestGroupAction_fansOutToAllLights(t *testing.T) {
+	// Given: a paired TV and a provider exposing three lights
+	s, ts := newTestServer(t)
+	p := &fanoutProvider{lights: map[string]any{
+		"1": map[string]any{}, "2": map[string]any{}, "3": map[string]any{},
+	}}
+	s.SetLightProvider(p)
+	resp := mustPostUA(t, ts.URL+"/api", `{"devicetype":"Philips_TV#Ambilight","generateclientkey":true}`, tvUserAgent)
+	var paired []map[string]map[string]string
+	json.NewDecoder(resp.Body).Decode(&paired)
+	resp.Body.Close()
+	username := paired[0]["success"]["username"]
+
+	// When: the TV drives the group action path (instead of per-light PUTs)
+	r := mustPut(t, ts.URL+"/api/"+username+"/groups/1/action", `{"on":true,"bri":200}`)
+	r.Body.Close()
+
+	// Then: the action is forwarded to every offered light, not silently dropped
+	if len(p.got) != 3 {
+		t.Fatalf("forwarded to %d lights, want 3: %v", len(p.got), p.got)
+	}
+	if p.got["2"]["bri"] != float64(200) {
+		t.Errorf("light 2 state = %v, want bri 200", p.got["2"])
+	}
+}
+
 func TestMarkActivity_advancesLastActivity(t *testing.T) {
 	// Given: a server with no activity yet (entertainment mode has no REST writes)
 	s, _ := newTestServer(t)

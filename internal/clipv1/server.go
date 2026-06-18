@@ -659,21 +659,34 @@ func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGroupAction is the groups REST path (PUT /api/{user}/groups/{id}/action).
-// The request is logged and acknowledged but deliberately NOT forwarded to the Pro.
-// Dropping group-action writes is intentional and safe for the target Ambilight TV:
-// the measured TV drives lights exclusively via per-light PUT /lights/{id}/state, so
-// it never relies on the group-action path. Per-light forwarding is the supported
-// control path. The recordGroupActionWrite tally (incremented in the request
-// middleware, not here) exists precisely to surface the group-action path being
-// exercised unexpectedly — if that counter ever moves on a real TV, the assumption
-// above no longer holds and this handler must forward.
+// The measured Ambilight TV drives lights exclusively via per-light
+// PUT /lights/{id}/state and never uses this path, so on the happy path this handler
+// is dormant (the recordGroupActionWrite tally, incremented in the request
+// middleware, is the tripwire that surfaces the path being exercised at all).
+//
+// But rather than silently drop the write if some TV/firmware ever does use it, the
+// action state is fanned out to every light relume offers, reusing the same coalescing
+// provider as per-light writes — so the lights follow either way. No-op until a Pro is
+// paired or when the body carries no state.
 func (s *Server) handleGroupAction(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(w, r) {
 		return
 	}
 	id := r.PathValue("id")
 	body, _ := io.ReadAll(r.Body)
-	s.log.Info("group action (not yet forwarded)", "group", id, "body", string(body))
+
+	var action map[string]any
+	if err := json.Unmarshal(body, &action); err != nil {
+		action = nil
+	}
+	forwarded := 0
+	if len(action) > 0 {
+		for v1id := range s.lightsV1() {
+			s.ForwardLight(v1id, action)
+			forwarded++
+		}
+	}
+	s.log.Info("group action forwarded", "group", id, "lights", forwarded, "body", string(body))
 	writeJSON(w, []map[string]any{{"success": map[string]any{"/groups/" + id + "/action": "ok"}}})
 }
 
