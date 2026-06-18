@@ -696,12 +696,17 @@ func (s *Server) handleGroupAction(w http.ResponseWriter, r *http.Request) {
 			forwarded++
 		}
 	}
-	if len(action) > 0 && forwarded == 0 {
+	switch {
+	case len(action) == 0:
+		// Empty or unparseable body: there is nothing to apply. Don't log it as a
+		// forward ("lights":0 would read like success); record it as the no-op it is.
+		s.log.Info("group action with no actionable state, ignored", "group", id, "body", string(body))
+	case forwarded == 0:
 		// A real action arrived but there are no lights to apply it to (none paired yet
 		// or the light list could not be read — lightsV1 warns separately on a read
 		// error). Surface the no-op rather than letting "lights":0 read like success.
 		s.log.Warn("group action received but no lights known to forward to (not applied)", "group", id, "body", string(body))
-	} else {
+	default:
 		s.log.Info("group action forwarded", "group", id, "lights", forwarded, "body", string(body))
 	}
 	writeJSON(w, []map[string]any{{"success": map[string]any{"/groups/" + id + "/action": "ok"}}})
