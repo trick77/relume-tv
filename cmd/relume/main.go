@@ -146,8 +146,63 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	}, nil
 }
 
+// serveConfig holds the derived, validated decisions for a serve run — separated
+// from the goroutine wiring so the branching logic (mode, port clash, window sizing,
+// summary cadence) is unit-testable without launching any listener.
+type serveConfig struct {
+	entertainmentMode bool          // control path: entertainment (DTLS) vs rest-follow
+	controlledWindow  time.Duration // sliding window for the currently-driven lights
+	windowRaised      bool          // true if controlledWindow was raised to exceed idle-off
+	activityWindow    time.Duration // cadence of the periodic activity summary
+	uiPort            int           // effective web UI port (0 = disabled)
+}
+
+// deriveServeConfig validates the serve options and computes the derived settings.
+// It is pure (no I/O) so every branch is testable. Returns an error for an invalid
+// mode or a web-UI port that clashes with the TV-facing HTTP port.
+func deriveServeConfig(opts serveOptions) (serveConfig, error) {
+	switch opts.mode {
+	case "rest", "entertainment":
+	default:
+		return serveConfig{}, fmt.Errorf("invalid -mode %q (want 'rest' or 'entertainment')", opts.mode)
+	}
+	ent := opts.mode == "entertainment"
+
+	uiPort := uiPortFor(opts)
+	if uiPort != 0 && uiPort == opts.httpPort {
+		return serveConfig{}, fmt.Errorf("web UI port %d clashes with -http-port; choose another (e.g. %d)", uiPort, uiDefaultPort)
+	}
+
+	// The controlled-light window must exceed the idle-off timeout, or the set would
+	// already be empty by the time idle-off fires (nothing left to flash off).
+	window := opts.controlledLightWindow
+	raised := false
+	if minWindow := opts.idleOffTimeout + 15*time.Second; opts.idleOffTimeout > 0 && window < minWindow {
+		window = minWindow
+		raised = true
+	}
+
+	// Entertainment mode shortens the summary window to surface the update-rate sooner.
+	activityWindow := 30 * time.Second
+	if ent {
+		activityWindow = 10 * time.Second
+	}
+
+	return serveConfig{
+		entertainmentMode: ent,
+		controlledWindow:  window,
+		windowRaised:      raised,
+		activityWindow:    activityWindow,
+		uiPort:            uiPort,
+	}, nil
+}
+
 func runServe(args []string, log *slog.Logger) error {
 	opts, err := parseServeOptions(args)
+	if err != nil {
+		return err
+	}
+	sc, err := deriveServeConfig(opts)
 	if err != nil {
 		return err
 	}
@@ -156,12 +211,9 @@ func runServe(args []string, log *slog.Logger) error {
 	// override it). When enabled, tee every log record into a hub so the UI's live
 	// event tail mirrors stderr. When disabled, the logger is untouched and the
 	// whole UI subsystem stays dormant (no overhead, headless behaviour).
-	uiPort := uiPortFor(opts)
+	uiPort := sc.uiPort
 	var uiHub *webui.Hub
 	if uiPort != 0 {
-		if uiPort == opts.httpPort {
-			return fmt.Errorf("web UI port %d clashes with -http-port; choose another (e.g. %d)", uiPort, uiDefaultPort)
-		}
 		uiHub = webui.NewHub(200)
 		base := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})
 		log = slog.New(webui.NewLogHandler(base, uiHub))
@@ -198,16 +250,11 @@ func runServe(args []string, log *slog.Logger) error {
 		"tv_devicetypes", cfg.PairedDeviceTypes(),
 	)
 
-	// mode selects the control path. Entertainment (default) confirms the TV's
-	// stream activation and runs the DTLS receiver on :2100, streaming to the Pro
-	// over DTLS; if the TV never opens its stream the watchdog reverts to REST.
-	// REST (explicit fallback) keeps the proven per-light REST-follow behavior.
-	switch opts.mode {
-	case "rest", "entertainment":
-	default:
-		return fmt.Errorf("invalid -mode %q (want 'rest' or 'entertainment')", opts.mode)
-	}
-	entertainmentMode := opts.mode == "entertainment"
+	// mode selects the control path (validated in deriveServeConfig). Entertainment
+	// (default) confirms the TV's stream activation and runs the DTLS receiver on
+	// :2100, streaming to the Pro over DTLS; if the TV never opens its stream the
+	// watchdog reverts to REST. REST keeps the proven per-light REST-follow behavior.
+	entertainmentMode := sc.entertainmentMode
 
 	clip := clipv1.New(cfg, ip, opts.httpPort, log)
 	clip.Debug = opts.debug
@@ -218,12 +265,10 @@ func runServe(args []string, log *slog.Logger) error {
 
 	// controlled tracks the lights the TV is currently driving for Ambilight (a
 	// sliding window). The restart/idle flash and idle-off target only these — and
-	// nothing when the set is empty, so we never flash uncaptured lights. The
-	// window must exceed the idle-off timeout, or the set would already be empty by
-	// the time idle-off fires.
-	window := opts.controlledLightWindow
-	if minWindow := opts.idleOffTimeout + 15*time.Second; opts.idleOffTimeout > 0 && window < minWindow {
-		window = minWindow
+	// nothing when the set is empty, so we never flash uncaptured lights. The window
+	// was sized in deriveServeConfig to exceed the idle-off timeout.
+	window := sc.controlledWindow
+	if sc.windowRaised {
 		log.Info("controlled-light-window raised to exceed idle-off-timeout", "window", window.String())
 	}
 	controlled := bridge.NewControlledSet(window)
@@ -304,14 +349,9 @@ func runServe(args []string, log *slog.Logger) error {
 		log.Info("web ui enabled", "addr", fmt.Sprintf(":%d", uiPort))
 	}
 
-	// Summarize the high-frequency Ambilight light-state writes periodically
-	// instead of logging every single request. Entertainment mode shortens the
-	// window to surface the update-rate (Hz) reading sooner.
-	activityWindow := 30 * time.Second
-	if entertainmentMode {
-		activityWindow = 10 * time.Second
-	}
-	go clip.LogActivitySummary(ctx, activityWindow)
+	// Summarize the high-frequency Ambilight light-state writes periodically instead
+	// of logging every single request (cadence derived in deriveServeConfig).
+	go clip.LogActivitySummary(ctx, sc.activityWindow)
 
 	// entStreamer is hoisted to function scope so the shutdown path can release
 	// relume's own entertainment stream on the Pro synchronously (Phase D), rather

@@ -60,6 +60,19 @@ func decodeCLIPErrors(raw []byte) error {
 }
 
 // Client talks to a Hue Bridge Pro.
+// ProController is the Pro-facing read + control surface that the light provider
+// and resilience code depend on, defined here (the producer package) so callers can
+// program to the interface and inject fakes in tests without a live Bridge Pro.
+// *Client is the production implementation.
+type ProController interface {
+	// Lights returns the Pro's lights (CLIP v2, value types).
+	Lights() ([]Light, error)
+	// SetLight applies a CLIP v2 light state body to the light with the given UUID.
+	SetLight(uuid string, v2body map[string]any) error
+}
+
+var _ ProController = (*Client)(nil)
+
 type Client struct {
 	host       string
 	appKey     string

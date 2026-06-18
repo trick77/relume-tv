@@ -405,6 +405,63 @@ func TestParseServeOptions_DefaultModeIsEntertainment(t *testing.T) {
 	}
 }
 
+func TestDeriveServeConfig(t *testing.T) {
+	base := serveOptions{mode: "entertainment", httpPort: 80, controlledLightWindow: time.Minute}
+
+	t.Run("invalid mode is rejected", func(t *testing.T) {
+		o := base
+		o.mode = "bogus"
+		if _, err := deriveServeConfig(o); err == nil {
+			t.Fatal("expected error for invalid mode")
+		}
+	})
+
+	t.Run("ui port clashing with http port is rejected", func(t *testing.T) {
+		o := base
+		o.uiPort = 80
+		if _, err := deriveServeConfig(o); err == nil {
+			t.Fatal("expected error for ui/http port clash")
+		}
+	})
+
+	t.Run("entertainment shortens the activity window", func(t *testing.T) {
+		sc, err := deriveServeConfig(base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !sc.entertainmentMode || sc.activityWindow != 10*time.Second {
+			t.Fatalf("got %+v", sc)
+		}
+	})
+
+	t.Run("rest uses the longer activity window", func(t *testing.T) {
+		o := base
+		o.mode = "rest"
+		sc, _ := deriveServeConfig(o)
+		if sc.entertainmentMode || sc.activityWindow != 30*time.Second {
+			t.Fatalf("got %+v", sc)
+		}
+	})
+
+	t.Run("controlled window is raised to exceed idle-off", func(t *testing.T) {
+		o := base
+		o.idleOffTimeout = 50 * time.Second // window 60s < 50+15=65s → raise
+		sc, _ := deriveServeConfig(o)
+		if !sc.windowRaised || sc.controlledWindow != 65*time.Second {
+			t.Fatalf("expected raised window 65s, got %+v", sc)
+		}
+	})
+
+	t.Run("controlled window left alone when already large enough", func(t *testing.T) {
+		o := base
+		o.idleOffTimeout = 30 * time.Second // window 60s >= 30+15=45s → keep
+		sc, _ := deriveServeConfig(o)
+		if sc.windowRaised || sc.controlledWindow != time.Minute {
+			t.Fatalf("expected unchanged 60s window, got %+v", sc)
+		}
+	})
+}
+
 func TestUIPortFor(t *testing.T) {
 	cases := []struct {
 		name   string
