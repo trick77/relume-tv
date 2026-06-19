@@ -54,8 +54,8 @@ type stubPro struct {
 	deleted        []string
 	createdN       int
 	createdMembers []bridgepro.ConfigMember
-	createErr error
-	getErr    error
+	createErr      error
+	getErr         error
 	// startBlockedUntilStop simulates a leftover-active config: StartStream is
 	// rejected until StopStream has been called once.
 	startBlockedUntilStop bool
