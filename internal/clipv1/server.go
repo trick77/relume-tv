@@ -641,17 +641,20 @@ func (s *Server) handleSetLightState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 3, "/lights/"+id, "no bridge pro paired")
 		return
 	}
-	s.recordWriteTime()
 	// Defense in depth: restrict the per-light write to the TV's requested Ambilight
 	// subset so an off-zone light is never driven — and, just as important, never
 	// recorded in the ControlledSet that the restart/idle flash targets (the flash must
 	// only ever touch driven lights). With no subset declared (AllowsMember true for
 	// all) this is the previous behaviour. Mirrors the group-action fan-out gate. We
 	// still return the normal v1 success so the TV sees no error and does not retry.
+	// The gate runs before recordWriteTime/noteRESTDriving so a dropped off-zone write
+	// is a true no-op: it neither counts as Ambilight activity (which would keep the
+	// idle-off from firing) nor as REST driving.
 	if n, err := strconv.Atoi(id); err == nil && !s.AllowsMember(uint16(n)) {
 		writeJSON(w, lightStateSuccess(id, state))
 		return
 	}
+	s.recordWriteTime()
 	if s.EntertainmentMode && s.stream.noteRESTDriving() {
 		s.log.Info("entertainment mode: TV driving via per-light REST writes — no DTLS stream opened " +
 			"(not a fallback; the TV simply isn't streaming entertainment)")

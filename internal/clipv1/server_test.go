@@ -396,6 +396,25 @@ func TestLastActivity_advancesOnLightStateWrite(t *testing.T) {
 	}
 }
 
+// A dropped off-zone write is a true no-op: it must not advance LastActivity, or a TV
+// writing only off-zone lights would keep the idle-off from ever firing.
+func TestLastActivity_doesNotAdvanceOnOffZoneWrite(t *testing.T) {
+	s, ts := newTestServer(t)
+	s.SetLightProvider(&fanoutProvider{lights: map[string]any{"9": map[string]any{}}})
+	user := pairTV(t, ts)
+
+	// Given: the TV's Ambilight zone excludes light 9.
+	s.setRequestedMembers([]uint16{3})
+
+	// When: the TV writes per-light to the off-zone light 9.
+	mustPut(t, ts.URL+"/api/"+user+"/lights/9/state", `{"on":true,"bri":254}`).Body.Close()
+
+	// Then: the write was dropped, so it did not register as activity.
+	if !s.LastActivity().IsZero() {
+		t.Fatalf("LastActivity advanced on an off-zone write = %v, want zero", s.LastActivity())
+	}
+}
+
 type recordingProvider struct {
 	fakeLightProvider
 	gotID    string
