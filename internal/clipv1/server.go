@@ -642,6 +642,16 @@ func (s *Server) handleSetLightState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordWriteTime()
+	// Defense in depth: restrict the per-light write to the TV's requested Ambilight
+	// subset so an off-zone light is never driven — and, just as important, never
+	// recorded in the ControlledSet that the restart/idle flash targets (the flash must
+	// only ever touch driven lights). With no subset declared (AllowsMember true for
+	// all) this is the previous behaviour. Mirrors the group-action fan-out gate. We
+	// still return the normal v1 success so the TV sees no error and does not retry.
+	if n, err := strconv.Atoi(id); err == nil && !s.AllowsMember(uint16(n)) {
+		writeJSON(w, lightStateSuccess(id, state))
+		return
+	}
 	if s.EntertainmentMode && s.stream.noteRESTDriving() {
 		s.log.Info("entertainment mode: TV driving via per-light REST writes — no DTLS stream opened " +
 			"(not a fallback; the TV simply isn't streaming entertainment)")
@@ -653,14 +663,19 @@ func (s *Server) handleSetLightState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 901, "/lights/"+id+"/state", "bridge pro error")
 		return
 	}
-	// v1 success response: one success entry per field that was set.
+	writeJSON(w, lightStateSuccess(id, state))
+}
+
+// lightStateSuccess builds the v1 light-state success body: one success entry per
+// field that was set, the shape the TV expects back from a PUT /lights/{id}/state.
+func lightStateSuccess(id string, state map[string]any) []map[string]any {
 	resp := make([]map[string]any, 0, len(state))
 	for k, v := range state {
 		resp = append(resp, map[string]any{"success": map[string]any{
 			"/lights/" + id + "/state/" + k: v,
 		}})
 	}
-	writeJSON(w, resp)
+	return resp
 }
 
 func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {

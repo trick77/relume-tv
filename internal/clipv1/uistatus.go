@@ -52,3 +52,19 @@ func (s *Server) UUIDForV1(v1id string) (string, bool) {
 	}
 	return "", false
 }
+
+// V1ForUUID maps a Bridge Pro UUID back to its v1 light id — the inverse of
+// UUIDForV1. Used to intersect a flash target (Pro UUIDs) with the TV's current
+// Ambilight membership (keyed by v1 id). Best-effort type-assert like UUIDForV1.
+func (s *Server) V1ForUUID(uuid string) (string, bool) {
+	p := s.lightProvider()
+	if p == nil {
+		return "", false
+	}
+	if u, ok := p.(interface {
+		V1ForUUID(string) (string, bool)
+	}); ok {
+		return u.V1ForUUID(uuid)
+	}
+	return "", false
+}

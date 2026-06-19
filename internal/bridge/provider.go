@@ -48,6 +48,7 @@ type LightProvider struct {
 	mu        sync.Mutex
 	cached    map[string]any
 	v1ToUUID  map[string]string
+	uuidToV1  map[string]string
 	fetchedAt time.Time
 
 	// Optimistic REST control: the TV's per-light writes are acknowledged
@@ -104,6 +105,10 @@ func (p *LightProvider) LightsV1() (map[string]any, error) {
 	lm := translate.LightsV1(lights)
 	p.cached = lm.V1
 	p.v1ToUUID = lm.V1ToUUID
+	p.uuidToV1 = make(map[string]string, len(lm.V1ToUUID))
+	for v1, uuid := range lm.V1ToUUID {
+		p.uuidToV1[uuid] = v1
+	}
 	p.fetchedAt = time.Now()
 	return p.cached, nil
 }
@@ -114,6 +119,16 @@ func (p *LightProvider) UUIDForV1(v1id string) (string, bool) {
 	defer p.mu.Unlock()
 	uuid, ok := p.v1ToUUID[v1id]
 	return uuid, ok
+}
+
+// V1ForUUID returns the numeric v1 light ID for a v2 resource UUID — the inverse of
+// UUIDForV1. Used to intersect a flash target (a list of Pro UUIDs) with the TV's
+// current Ambilight membership, which is keyed by v1 id.
+func (p *LightProvider) V1ForUUID(uuid string) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	v1, ok := p.uuidToV1[uuid]
+	return v1, ok
 }
 
 // SetLightV1 queues the latest state for a light and returns immediately; the

@@ -50,7 +50,23 @@ func (f *fakeClient) calls() int {
 func newTestProvider(c proClient) *LightProvider {
 	p := &LightProvider{client: c, pending: map[string]map[string]any{}}
 	p.v1ToUUID = map[string]string{"1": "uuid-1", "2": "uuid-2"} // skip the Lights() resolution
+	p.uuidToV1 = map[string]string{"uuid-1": "1", "uuid-2": "2"} // inverse, as LightsV1 builds it
 	return p
+}
+
+func TestV1ForUUID_isInverseOfUUIDForV1(t *testing.T) {
+	p := newTestProvider(&fakeClient{})
+
+	if v1, ok := p.V1ForUUID("uuid-2"); !ok || v1 != "2" {
+		t.Fatalf("V1ForUUID(uuid-2) = %q,%v want 2,true", v1, ok)
+	}
+	// Round-trips with the forward map.
+	if uuid, _ := p.UUIDForV1("1"); uuid != "uuid-1" {
+		t.Fatalf("UUIDForV1(1) = %q want uuid-1", uuid)
+	}
+	if _, ok := p.V1ForUUID("uuid-unknown"); ok {
+		t.Fatalf("V1ForUUID(unknown) ok = true, want false")
+	}
 }
 
 func TestOnControlled_firesOnEveryForward(t *testing.T) {

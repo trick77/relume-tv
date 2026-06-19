@@ -367,6 +367,11 @@ func runServe(args []string, log *slog.Logger) error {
 			// empty set makes FlashIdle a no-op (the UI also disables the button).
 			var uuids []string
 			for _, v1 := range liveColors.DrivenV1IDs() {
+				// Never flash a light outside the TV's current Ambilight zone, even if it
+				// is in the driven set (membership can have shrunk since it was driven).
+				if n, err := strconv.Atoi(v1); err == nil && !clip.AllowsMember(uint16(n)) {
+					continue
+				}
 				if uuid, ok := clip.UUIDForV1(v1); ok {
 					uuids = append(uuids, uuid)
 				}
@@ -531,7 +536,7 @@ func runServe(args []string, log *slog.Logger) error {
 	// GetPro reads the current pairing under the mutex (watchPro may have reconnected
 	// it to a new IP since startup).
 	if shutPro := cfg.GetPro(); shutPro != nil {
-		flashRestartBounded(bridgepro.New(shutPro), log, controlled.Current(), shutdownFlashBudget)
+		flashRestartBounded(bridgepro.New(shutPro), log, inZoneUUIDs(clip, controlled.Current()), shutdownFlashBudget)
 	}
 	return nil
 }
@@ -557,6 +562,34 @@ func flashRestartBounded(client *bridgepro.Client, log *slog.Logger, ids []strin
 	case <-time.After(max):
 		log.Warn("restart flash timed out (hue bridge pro unreachable?) — exiting anyway", "after", max.String())
 	}
+}
+
+// zoneMembership is the slice of the clipv1 server inZoneUUIDs needs: resolve a Pro
+// UUID to its v1 id and ask whether that id is in the TV's current Ambilight zone.
+// *clipv1.Server satisfies it; an interface keeps the filter testable in isolation.
+type zoneMembership interface {
+	V1ForUUID(uuid string) (string, bool)
+	AllowsMember(v1id uint16) bool
+}
+
+// inZoneUUIDs filters a flash target (Bridge Pro light UUIDs) down to the lights
+// still in the TV's current Ambilight zone, so the restart/idle flash never touches
+// an off-zone light — even one that lingers in the ControlledSet from before the zone
+// shrank. A UUID is dropped only when its v1 id resolves AND is positively outside the
+// zone; an unresolved UUID is kept, mirroring AllowsMember's defensive "allow when
+// unknown" stance so the flash is never silently reduced to nothing. With no zone
+// declared (AllowsMember true for all) the list passes through unchanged.
+func inZoneUUIDs(m zoneMembership, uuids []string) []string {
+	out := make([]string, 0, len(uuids))
+	for _, uuid := range uuids {
+		if v1, ok := m.V1ForUUID(uuid); ok {
+			if n, err := strconv.Atoi(v1); err == nil && !m.AllowsMember(uint16(n)) {
+				continue
+			}
+		}
+		out = append(out, uuid)
+	}
+	return out
 }
 
 // stopEntertainment tears down the Pro entertainment stream on shutdown (idempotent
@@ -622,7 +655,7 @@ func monitorIdle(ctx context.Context, clip *clipv1.Server, cfg *config.Config, c
 			// re-pair concurrently. nil while no Pro is paired: nothing to flash.
 			if pro := cfg.GetPro(); pro != nil {
 				log.Info("ambilight idle: flashing the ambilight lights off", "idle_for", now.Sub(lastSeen).Round(time.Second).String())
-				bridge.FlashIdle(bridgepro.New(pro), log, controlled.Current())
+				bridge.FlashIdle(bridgepro.New(pro), log, inZoneUUIDs(clip, controlled.Current()))
 			}
 		}
 	}
