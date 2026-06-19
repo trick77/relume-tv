@@ -102,6 +102,11 @@ type ProStreamer struct {
 	// fallback sink. Wired by main.
 	OnColor func(states map[string]map[string]any)
 
+	// OnSend, if set, is called once per frame successfully written to the Pro over
+	// DTLS (the 50 Hz sendLoop). Lets the web UI show the live relume→Pro send rate,
+	// the upsampled counterpart to the TV→relume input rate. Wired by main.
+	OnSend func()
+
 	// port overrides the Pro DTLS port (default 2100); for tests.
 	port int
 	// dial is the DTLS dialer seam (default dialPro); for tests. The ctx is the run
@@ -391,6 +396,9 @@ func (s *ProStreamer) sendLoop(ctx context.Context) {
 				return
 			}
 			sent++
+			if s.OnSend != nil {
+				s.OnSend()
+			}
 		}
 	}
 }

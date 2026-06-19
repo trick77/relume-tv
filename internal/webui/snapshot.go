@@ -51,6 +51,13 @@ type Snapshot struct {
 	// StreamFPS is the live entertainment-stream frame rate (frames/s the TV is
 	// pushing over DTLS). Non-zero only while streaming to the Pro; 0 otherwise.
 	StreamFPS int `json:"streamFps"`
+	// ProSendFPS is relume's outgoing DTLS frame rate to the Pro (frames/s, the 50 Hz
+	// sendLoop). The upsampled counterpart to StreamFPS; non-zero only in DTLS mode.
+	ProSendFPS int `json:"proSendFps,omitempty"`
+	// ProWriteRate is relume's outgoing REST write rate to the Pro (writes/s, per
+	// light, coalesced). The REST-path counterpart to ProSendFPS; non-zero only when
+	// driving the Pro over REST (fallback or plain REST-follow).
+	ProWriteRate int `json:"proWriteRate,omitempty"`
 }
 
 // StateSource exposes relume's live state to the snapshot builder without
@@ -81,6 +88,12 @@ type StateSource interface {
 	// StreamFPS is the live entertainment-stream frame rate (TV→relume over DTLS).
 	// 0 when no DTLS stream is running.
 	StreamFPS() int
+	// ProSendFPS is relume's outgoing DTLS frame rate to the Pro (frames/s). 0 unless
+	// streaming to the Pro over DTLS.
+	ProSendFPS() int
+	// ProWriteRate is relume's outgoing REST write rate to the Pro (writes/s). 0
+	// unless driving the Pro over REST.
+	ProWriteRate() int
 }
 
 func rfc3339(t time.Time) string {
@@ -118,6 +131,8 @@ func BuildSnapshot(src StateSource) Snapshot {
 		LastActivity: rfc3339(src.LastActivity()),
 		Lights:       []LightView{},
 		StreamFPS:    src.StreamFPS(),
+		ProSendFPS:   src.ProSendFPS(),
+		ProWriteRate: src.ProWriteRate(),
 	}
 
 	switch {

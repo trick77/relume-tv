@@ -71,20 +71,31 @@ function modeSub(s) {
 }
 
 // streamVal shows the live entertainment frame rate while the TV is streaming to the
-// Pro over DTLS (health "streaming-pro"). In every other state there is no DTLS stream
-// to the Pro to report, so it shows a dash — streamSub explains why.
+// Pro: in DTLS mode it shows both the TV input rate and relume's upsampled send rate
+// (in → out fps); on the REST paths it shows relume's outgoing write rate to the Pro
+// (writes/s). Idle/unpaired states show a dash — streamSub explains why.
 function streamVal(s) {
-  if (s.health === "streaming-pro") return `<span class="ok">●</span> ${s.streamFps || 0} fps`;
-  return "—";
+  switch (s.health) {
+    case "streaming-pro":
+      return `<span class="ok">●</span> ${s.streamFps || 0} → ${s.proSendFps || 0} fps`;
+    case "entertainment-fallback":
+      // Amber dot: streaming, but degraded (DTLS to the Pro failed → REST fallback).
+      return `<span class="warn">●</span> ${s.streamFps || 0} fps in`;
+    case "active-rest":
+      return `<span class="ok">●</span> ${s.proWriteRate || 0} writes/s`;
+    default:
+      return "—";
+  }
 }
 
 // streamSub explains the stream state under the Stream label. Kept distinct from the
-// Mode card: this card is about the live DTLS stream to the Pro, not the configured path.
+// Mode card: this card is about the live path to the Pro, not the configured path. On
+// the REST paths it also carries the outgoing write rate so both directions are visible.
 function streamSub(s) {
   switch (s.health) {
     case "streaming-pro": return "DTLS → Pro";
-    case "entertainment-fallback": return "fallback to REST";
-    case "active-rest": return "REST path";
+    case "entertainment-fallback": return `REST fallback · ${s.proWriteRate || 0} writes/s`;
+    case "active-rest": return "REST → Pro";
     case "idle": return "TV not driving";
     case "no-tv": return "no TV paired";
     default: return "Pro not paired";
@@ -182,7 +193,7 @@ function renderDashboard(s) {
       return `<div class="lamp ${l.driven ? "driven" : ""} ${l.on ? "" : "off"}">
         <div class="swatch" style="${l.on ? `background:${col};box-shadow:0 0 20px ${col}` : ""}"></div>
         <div class="nm">${esc(l.name)}</div>
-        <div class="st">${l.on ? `<span class="ok">on</span>` : "off"}</div></div>`;
+        <div class="st">${l.on ? `<span class="ok">On</span>` : "Off"}</div></div>`;
     })
     .join("");
   const driven = drivenLights.length;
