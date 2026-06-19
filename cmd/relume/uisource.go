@@ -3,7 +3,6 @@ package main
 import (
 	"time"
 
-	"github.com/trick77/relume/internal/bridge"
 	"github.com/trick77/relume/internal/clipv1"
 	"github.com/trick77/relume/internal/config"
 	"github.com/trick77/relume/internal/webui"
@@ -14,16 +13,11 @@ import (
 type uiSource struct {
 	cfg        *config.Config
 	clip       *clipv1.Server
-	controlled *bridge.ControlledSet
 	liveColors *liveColors
 	frameStats *frameStats
 	advName    string
 	version    string
 	started    time.Time
-	// activeWindow is how recently the TV must have driven the lights to count as
-	// "active" in the UI. Mirrors the idle-off window so the UI reports "idle" once
-	// relume itself considers the TV gone.
-	activeWindow time.Duration
 }
 
 func (u *uiSource) Version() string      { return u.version }
@@ -43,17 +37,20 @@ func (u *uiSource) BridgeName() string                 { return u.advName }
 func (u *uiSource) PendingTVPairing() bool             { return u.clip.PendingTVPairing() }
 func (u *uiSource) LastActivity() time.Time            { return u.clip.LastActivity() }
 func (u *uiSource) LightsV1() (map[string]any, bool)   { return u.clip.LightsV1Snapshot() }
-func (u *uiSource) UUIDForV1(id string) (string, bool) { return u.clip.UUIDForV1(id) }
-func (u *uiSource) DrivenUUIDs() []string              { return u.controlled.Current() }
+
+// DrivenV1IDs returns the v1 light ids the TV is driving right now (seen within the
+// liveColors freshness window). Empties soon after the stream stops, unlike the
+// sticky ControlledSet — so the UI count and the manual flash reflect the live set.
+func (u *uiSource) DrivenV1IDs() []string { return u.liveColors.DrivenV1IDs() }
 
 func (u *uiSource) LiveColors() map[string]webui.LiveColor { return u.liveColors.Snapshot() }
 
 func (u *uiSource) StreamFPS() int { return u.frameStats.FPS() }
 
+// Active reports whether the TV is currently driving any light — tied to the same
+// 2s freshness window as the driven count, so the header "Active/Idle" state, the
+// Lights "driven" count and the flash button stay consistent (no window where the
+// header says Active while the count is 0).
 func (u *uiSource) Active() bool {
-	last := u.clip.LastActivity()
-	if last.IsZero() {
-		return false
-	}
-	return time.Since(last) < u.activeWindow
+	return len(u.liveColors.DrivenV1IDs()) > 0
 }
