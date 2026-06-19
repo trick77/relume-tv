@@ -396,6 +396,25 @@ func TestLastActivity_advancesOnLightStateWrite(t *testing.T) {
 	}
 }
 
+// A dropped off-zone write is a true no-op: it must not advance LastActivity, or a TV
+// writing only off-zone lights would keep the idle-off from ever firing.
+func TestLastActivity_doesNotAdvanceOnOffZoneWrite(t *testing.T) {
+	s, ts := newTestServer(t)
+	s.SetLightProvider(&fanoutProvider{lights: map[string]any{"9": map[string]any{}}})
+	user := pairTV(t, ts)
+
+	// Given: the TV's Ambilight zone excludes light 9.
+	s.setRequestedMembers([]uint16{3})
+
+	// When: the TV writes per-light to the off-zone light 9.
+	mustPut(t, ts.URL+"/api/"+user+"/lights/9/state", `{"on":true,"bri":254}`).Body.Close()
+
+	// Then: the write was dropped, so it did not register as activity.
+	if !s.LastActivity().IsZero() {
+		t.Fatalf("LastActivity advanced on an off-zone write = %v, want zero", s.LastActivity())
+	}
+}
+
 type recordingProvider struct {
 	fakeLightProvider
 	gotID    string
@@ -1172,5 +1191,55 @@ func TestGroupAction_restrictedToRequestedSubset(t *testing.T) {
 	}
 	if _, ok := p.got["3"]; !ok {
 		t.Fatalf("subset light 3 not forwarded: %v", p.got)
+	}
+}
+
+// A per-light REST write to an off-zone light must be dropped: it must neither reach
+// the Pro (so the light stays dark) nor taint the ControlledSet the restart/idle flash
+// targets. The TV still gets a v1 success so it does not retry. Guards the AllowsMember
+// gate in handleSetLightState (the per-light counterpart to the group-action gate).
+func TestSetLightState_offZoneLightIsNotForwarded(t *testing.T) {
+	s, ts := newTestServer(t)
+	p := &fanoutProvider{lights: map[string]any{
+		"3": map[string]any{}, "9": map[string]any{},
+	}}
+	s.SetLightProvider(p)
+	user := pairTV(t, ts)
+
+	// Given: the TV restricts its Ambilight zone to light 3 only.
+	s.setRequestedMembers([]uint16{3})
+
+	// When: the TV writes per-light to the in-zone light 3 and the off-zone light 9.
+	mustPut(t, ts.URL+"/api/"+user+"/lights/3/state", `{"on":true,"bri":200}`).Body.Close()
+	r := mustPut(t, ts.URL+"/api/"+user+"/lights/9/state", `{"on":true,"bri":200}`)
+	defer r.Body.Close()
+
+	// Then: only the in-zone light reaches the provider; the off-zone one is dropped.
+	if _, ok := p.got["9"]; ok {
+		t.Fatalf("off-zone light 9 was forwarded, want dropped: %v", p.got)
+	}
+	if _, ok := p.got["3"]; !ok {
+		t.Fatalf("in-zone light 3 not forwarded: %v", p.got)
+	}
+	// And the off-zone write still acks success so the TV does not retry.
+	var ack []map[string]map[string]any
+	json.NewDecoder(r.Body).Decode(&ack)
+	if len(ack) == 0 || ack[0]["success"] == nil {
+		t.Fatalf("off-zone write did not ack success: %v", ack)
+	}
+}
+
+// With no zone declared yet, a per-light write reaches every light (defensive
+// fallback — nothing goes dark before the TV creates its Entertainment group).
+func TestSetLightState_noSubsetForwardsAll(t *testing.T) {
+	s, ts := newTestServer(t)
+	p := &fanoutProvider{lights: map[string]any{"9": map[string]any{}}}
+	s.SetLightProvider(p)
+	user := pairTV(t, ts)
+
+	mustPut(t, ts.URL+"/api/"+user+"/lights/9/state", `{"on":true,"bri":200}`).Body.Close()
+
+	if _, ok := p.got["9"]; !ok {
+		t.Fatalf("light 9 not forwarded with no subset declared: %v", p.got)
 	}
 }

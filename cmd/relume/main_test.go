@@ -83,6 +83,57 @@ func TestParseServeOptions_bridgeProAutoPairFlags(t *testing.T) {
 	}
 }
 
+// fakeMembership implements zoneMembership: uuids resolves a UUID to its v1 id (a
+// missing entry means "unknown"), zone is the set of v1 ids currently in the zone, and
+// allowAll mirrors AllowsMember's nil-subset fallback (every light allowed).
+type fakeMembership struct {
+	uuids    map[string]string
+	zone     map[uint16]bool
+	allowAll bool
+}
+
+func (f fakeMembership) V1ForUUID(uuid string) (string, bool) {
+	v1, ok := f.uuids[uuid]
+	return v1, ok
+}
+
+func (f fakeMembership) AllowsMember(v1id uint16) bool {
+	if f.allowAll {
+		return true
+	}
+	return f.zone[v1id]
+}
+
+func TestInZoneUUIDs_dropsOffZoneKeepsInZoneAndUnknown(t *testing.T) {
+	m := fakeMembership{
+		uuids: map[string]string{"uuid-3": "3", "uuid-9": "9"}, // uuid-x is unknown
+		zone:  map[uint16]bool{3: true},                        // only light 3 in zone
+	}
+	got := inZoneUUIDs(m, []string{"uuid-3", "uuid-9", "uuid-x"})
+
+	// In-zone kept, off-zone dropped, unresolved kept (defensive — never flash nothing).
+	want := map[string]bool{"uuid-3": true, "uuid-x": true}
+	if len(got) != len(want) {
+		t.Fatalf("inZoneUUIDs = %v, want keys %v", got, want)
+	}
+	for _, u := range got {
+		if !want[u] {
+			t.Fatalf("inZoneUUIDs kept %q, not wanted; got %v", u, got)
+		}
+	}
+}
+
+func TestInZoneUUIDs_noZonePassesAllThrough(t *testing.T) {
+	m := fakeMembership{
+		uuids:    map[string]string{"uuid-3": "3", "uuid-9": "9"},
+		allowAll: true, // no subset declared → AllowsMember true for all
+	}
+	got := inZoneUUIDs(m, []string{"uuid-3", "uuid-9"})
+	if len(got) != 2 {
+		t.Fatalf("inZoneUUIDs with no zone = %v, want both kept", got)
+	}
+}
+
 func TestIdleShouldFire(t *testing.T) {
 	const timeout = 30 * time.Second
 	base := time.Unix(1_700_000_000, 0)
