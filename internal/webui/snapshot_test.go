@@ -33,7 +33,9 @@ func (f fakeSource) LightsV1() (map[string]any, bool) {
 func (f fakeSource) DrivenV1IDs() []string            { return f.driven }
 func (f fakeSource) LiveColors() map[string]LiveColor { return f.live }
 func (f fakeSource) Active() bool                     { return true }
-func (f fakeSource) StreamFPS() int                   { return 50 }
+func (f fakeSource) StreamFPS() int                   { return 25 }
+func (f fakeSource) ProSendFPS() int                  { return 50 }
+func (f fakeSource) ProWriteRate() int                { return 0 }
 
 func TestBuildSnapshot_MapsLightsAndDriven(t *testing.T) {
 	s := BuildSnapshot(fakeSource{driven: []string{"1"}})
@@ -53,8 +55,14 @@ func TestBuildSnapshot_MapsLightsAndDriven(t *testing.T) {
 	if s.LastActivity != "" {
 		t.Fatalf("zero time should render empty, got %q", s.LastActivity)
 	}
-	if s.StreamFPS != 50 {
-		t.Fatalf("streamFps = %d, want 50 (live rate flows through to the snapshot)", s.StreamFPS)
+	if s.StreamFPS != 25 {
+		t.Fatalf("streamFps = %d, want 25 (TV input rate flows through to the snapshot)", s.StreamFPS)
+	}
+	if s.ProSendFPS != 50 {
+		t.Fatalf("proSendFps = %d, want 50 (relume→Pro DTLS send rate flows through)", s.ProSendFPS)
+	}
+	if s.ProWriteRate != 0 {
+		t.Fatalf("proWriteRate = %d, want 0 (no REST writes while streaming DTLS)", s.ProWriteRate)
 	}
 }
 
@@ -107,6 +115,8 @@ func (emptySource) DrivenV1IDs() []string            { return nil }
 func (emptySource) LiveColors() map[string]LiveColor { return nil }
 func (emptySource) Active() bool                     { return false }
 func (emptySource) StreamFPS() int                   { return 0 }
+func (emptySource) ProSendFPS() int                  { return 0 }
+func (emptySource) ProWriteRate() int                { return 0 }
 
 func TestBuildSnapshot_EmptyArraysNotNil(t *testing.T) {
 	s := BuildSnapshot(emptySource{})

@@ -292,10 +292,16 @@ func runServe(args []string, log *slog.Logger) error {
 	// frame below) so the web UI can show the stream's frames/s. Harmless when no UI
 	// runs or no DTLS stream is active (reports 0).
 	frameStats := newFrameStats()
+	// proSendStats / proWriteStats track relume's *outgoing* rate to the Pro — the
+	// counterpart to frameStats' incoming rate. proSendStats is fed per DTLS frame
+	// sent (50 Hz sendLoop), proWriteStats per successful REST write (coalesced,
+	// per light). Only one is non-zero at a time, depending on the active path.
+	proSendStats := newFrameStats()
+	proWriteStats := newFrameStats()
 
 	if pro != nil {
 		client := bridgepro.New(pro)
-		clip.SetLightProvider(newProvider(client, controlled, liveColors, log))
+		clip.SetLightProvider(newProvider(client, controlled, liveColors, proWriteStats, log))
 		log.Info("hue bridge pro paired", "", pro)
 	}
 	var responder *ssdp.Responder
@@ -319,14 +325,14 @@ func runServe(args []string, log *slog.Logger) error {
 	// empty light list until the Pro pairing completes, then hot-loads the lights.
 	if pro == nil {
 		log.Warn("no hue bridge pro paired yet – auto-pairing in background; TAP the hue bridge pro link button")
-		go autoPairPro(ctx, cfg, clip, controlled, liveColors, opts.bridgeIP, opts.skipTLS, log)
+		go autoPairPro(ctx, cfg, clip, controlled, liveColors, proWriteStats, opts.bridgeIP, opts.skipTLS, log)
 	} else {
 		// No restart flash at startup: the controlled set is empty here (no TV write
 		// captured yet), so we have nothing to flash. The restart indicator is the
 		// shutdown flash below — on `docker compose up -d` the old container gets
 		// SIGTERM and blinks the currently-driven Ambilight bulbs red+off first.
 		// Keep the already-paired Pro reachable across reboots / IP changes.
-		w := newProWatcher(cfg, clip, controlled, liveColors, opts.bridgeIP, opts.skipTLS, log)
+		w := newProWatcher(cfg, clip, controlled, liveColors, proWriteStats, opts.bridgeIP, opts.skipTLS, log)
 		go w.run(ctx)
 	}
 
@@ -336,16 +342,18 @@ func runServe(args []string, log *slog.Logger) error {
 	if uiPort != 0 {
 		bridgeID := cfg.Identity.BridgeID()
 		src := &uiSource{
-			cfg:        cfg,
-			clip:       clip,
-			liveColors: liveColors,
-			frameStats: frameStats,
+			cfg:           cfg,
+			clip:          clip,
+			liveColors:    liveColors,
+			frameStats:    frameStats,
+			proSendStats:  proSendStats,
+			proWriteStats: proWriteStats,
 			// UI-only display name for relume's own bridge. NOTE: the actual mDNS
 			// instance the TV discovers is still "Philips Hue - …" (internal/mdns),
 			// deliberately unchanged so discovery keeps working.
-			advName:    "Relume Bridge - " + bridgeID[len(bridgeID)-6:],
-			version:    version,
-			started:    time.Now(),
+			advName: "Relume Bridge - " + bridgeID[len(bridgeID)-6:],
+			version: version,
+			started: time.Now(),
 		}
 		flash := func() error {
 			pro := cfg.GetPro()
@@ -408,6 +416,9 @@ func runServe(args []string, log *slog.Logger) error {
 			// Surface the live DTLS-passthrough colours to the web UI (the REST path is
 			// covered by the provider's OnColor via the fallback sink).
 			streamer.OnColor = liveColors.SetStates
+			// Record each frame sent to the Pro over DTLS so the UI can show the live
+			// outgoing send rate (the 50 Hz counterpart to the TV's ~25 Hz input).
+			streamer.OnSend = proSendStats.Mark
 			// Persist/reuse relume's own entertainment_configuration across restarts
 			// instead of re-finding it each stream (Phase D).
 			streamer.SetConfigStore(cfg.LoadEntConfigID, func(id string) {
@@ -551,10 +562,13 @@ func stopEntertainment(s *entertainment.ProStreamer) {
 // sliding-window ControlledSet with each light the TV drives, so the restart/idle
 // flash and idle-off touch only the bulbs the TV is currently driving — never the
 // rest of the home.
-func newProvider(client *bridgepro.Client, controlled *bridge.ControlledSet, live *liveColors, log *slog.Logger) *bridge.LightProvider {
+func newProvider(client *bridgepro.Client, controlled *bridge.ControlledSet, live *liveColors, writeStats *frameStats, log *slog.Logger) *bridge.LightProvider {
 	p := bridge.NewLightProvider(client, log)
 	p.OnControlled = controlled.Seen
 	p.OnColor = live.SetState
+	// Record each successful REST write to the Pro so the UI can show the live
+	// outgoing write rate when relume drives the Pro over REST (no DTLS stream).
+	p.OnForward = writeStats.Mark
 	return p
 }
 
@@ -617,7 +631,7 @@ func idleShouldFire(now, lastSeen time.Time, fired bool, idleTimeout time.Durati
 // leaf certificate, then polls until the user taps the Pro's physical link button
 // (the one step that cannot be automated). On success it persists the credentials
 // and hot-loads the light backend so the already-paired TV starts seeing lights.
-func autoPairPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, controlled *bridge.ControlledSet, live *liveColors, bridgeIP string, skipTLS bool, log *slog.Logger) {
+func autoPairPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, controlled *bridge.ControlledSet, live *liveColors, writeStats *frameStats, bridgeIP string, skipTLS bool, log *slog.Logger) {
 	var host, discoveryID string
 	for host == "" {
 		h, id, derr := resolveProHost(bridgeIP, "", bridgepro.Discover, log)
@@ -670,7 +684,7 @@ func autoPairPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, c
 		return
 	}
 	client := bridgepro.New(paired)
-	clip.SetLightProvider(newProvider(client, controlled, live, log))
+	clip.SetLightProvider(newProvider(client, controlled, live, writeStats, log))
 	log.Info("hue bridge pro paired (auto)", "", paired)
 	if lights, lerr := client.Lights(); lerr == nil {
 		log.Info("hue bridge pro lights available", "count", len(lights), "color", colorCapable(lights))

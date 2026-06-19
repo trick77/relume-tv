@@ -39,6 +39,12 @@ type LightProvider struct {
 	// passthrough is captured separately in the entertainment streamer. Wired by main.
 	OnColor func(v1id string, state map[string]any)
 
+	// OnForward, if set, is called once per light state successfully written to the
+	// Bridge Pro over REST (coalesced; dropped frames never reach the Pro and are not
+	// counted). Lets the web UI show the live relume→Pro REST write rate — the
+	// REST-path counterpart to the DTLS sendLoop's frame rate. Wired by main.
+	OnForward func()
+
 	mu        sync.Mutex
 	cached    map[string]any
 	v1ToUUID  map[string]string
@@ -207,5 +213,11 @@ func (p *LightProvider) forward(v1id string, v1state map[string]any) error {
 	if p.OnColor != nil {
 		p.OnColor(v1id, v1state)
 	}
-	return p.client.SetLight(uuid, v2)
+	if err := p.client.SetLight(uuid, v2); err != nil {
+		return err
+	}
+	if p.OnForward != nil {
+		p.OnForward()
+	}
+	return nil
 }
