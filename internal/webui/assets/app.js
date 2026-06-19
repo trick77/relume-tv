@@ -30,25 +30,19 @@ const esc = (s) =>
   String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 function healthLabel(h) {
-  return {
-    "streaming-pro": "Active · streaming to Pro",
-    "entertainment-fallback": "Active · entertainment fallback → REST",
-    "active-rest": "Active",
-    "idle": "Idle · TV not driving",
-    "no-tv": "Waiting for TV pairing",
-    "unpaired-pro": "Hue Bridge Pro not paired",
-  }[h] || h;
+  return (h === "streaming-pro" || h === "entertainment-fallback" || h === "active-rest")
+    ? "Active"
+    : "Inactive";
 }
 
-// healthDotClass colours the status dot: a steady green when actively driving the
-// lights, amber for a degraded fallback or anything needing attention. Only the amber
-// states pulse — a calm "all good" should not flash; the pulse is reserved to draw the
-// eye to states that want attention.
+// healthDotClass colours the status dot consistently with the binary pill: a steady
+// green when the TV is actively driving the lights (Active), amber-pulsing otherwise
+// (Inactive). The pulse is reserved to draw the eye to standby/attention states. The
+// degraded "entertainment-fallback" detail is no longer shown here — it stays visible
+// via the Stream card's amber ● indicator.
 function healthDotClass(h) {
-  if (h === "streaming-pro" || h === "active-rest") return "dot ok";
-  if (h === "entertainment-fallback") return "dot pulse"; // amber: degraded (DTLS failed → REST)
-  if (h === "idle") return "dot pulse"; // amber standby
-  return "dot pulse"; // amber: needs attention (no-tv / unpaired-pro)
+  if (h === "streaming-pro" || h === "entertainment-fallback" || h === "active-rest") return "dot ok";
+  return "dot pulse";
 }
 
 // currentMode is the path relume is forwarding on RIGHT NOW, not the configured
