@@ -40,7 +40,7 @@ body {
   color: transparent;
 }
 .brand span { color: inherit; }
-.ver { font-size: 11px; color: var(--faint); border: 1px solid var(--line); padding: 2px 7px; border-radius: 6px; }
+.ver { font-size: 11px; color: var(--faint); border: 1px solid var(--line); padding: 2px 7px; border-radius: 6px; position: relative; top: 2px; }
 .spacer { flex: 1; }
 .health {
   display: flex; align-items: center; gap: 8px;
@@ -61,7 +61,7 @@ body {
 }
 .pipe .step { flex: 1; display: flex; flex-direction: column; gap: 5px; position: relative; padding: 0 16px; }
 .pipe .step:not(:last-child)::after {
-  content: ""; position: absolute; right: 0; top: 14px; width: 1px; height: 36px; background: var(--line);
+  content: ""; position: absolute; right: 0; top: 6px; bottom: 6px; width: 1px; background: var(--line);
 }
 .pipe .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--faint); }
 .info {
