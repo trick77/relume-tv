@@ -98,20 +98,24 @@ function cap(str) {
 }
 
 // _startedAtMs holds relume's start time (ms epoch) so the uptime can tick every
-// second between snapshot pushes. fmtUptime renders only the largest unit: days
-// once uptime reaches a day, hours past an hour, otherwise minutes/seconds.
+// second between snapshot pushes. fmtUptime renders only the largest unit, spelled
+// out with correct singular/plural: weeks once past 7 days, then days/hours/
+// minutes/seconds (e.g. "1 week", "2 days", "1 hour", "50 seconds").
 let _startedAtMs = null;
 function fmtUptime(ms) {
   if (!(ms >= 0)) return "";
+  const unit = (n, name) => `${n} ${name}${n === 1 ? "" : "s"}`;
   const s = Math.floor(ms / 1000);
+  const w = Math.floor(s / 604800);
   const d = Math.floor(s / 86400);
   const h = Math.floor((s % 86400) / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = s % 60;
-  if (d > 0) return `${d}d`;
-  if (h > 0) return `${h}h`;
-  if (m > 0) return `${m}m`;
-  return `${sec}s`;
+  if (w > 0) return unit(w, "week");
+  if (d > 0) return unit(d, "day");
+  if (h > 0) return unit(h, "hour");
+  if (m > 0) return unit(m, "minute");
+  return unit(sec, "second");
 }
 function tickUptime() {
   const el = document.getElementById("uptime");
