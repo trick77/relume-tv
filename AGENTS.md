@@ -31,9 +31,9 @@ All repo content (docs, code comments, logs) is English.
 - web UI (setup assistant + live dashboard) is ON by default on :33100; `-headless` disables it,
   `-ui-port` moves it (must differ from -http-port). `-ui` is a kept no-op. NO auth, so under
   `network_mode: host` it is LAN-reachable by anyone — read-only, never touches the control paths.
-- backend Pro pairing is AUTOMATIC in `serve`, driven by the web-UI setup wizard (Cloud-Discovery
-  only): if no Pro is paired, a background goroutine (`autoPairPro`) discovers it via Philips cloud
-  (discovery.meethue.com; picks the first real Bridge Pro, modelid BSB003), pins the cert, and polls
+- backend Pro pairing is AUTOMATIC in `serve`, driven by the web-UI setup wizard: if no Pro is
+  paired, a background goroutine (`autoPairPro`) discovers it via local mDNS (`_hue._tcp.local.`;
+  picks the first real Hue Bridge Pro by advertised modelid BSB003, no cloud), pins the cert, and polls
   until the user taps the Pro's physical button (the only non-automatable step), then hot-loads
   lights. Runs independently of the TV side. `clipv1.Server` light provider is swapped at runtime
   (RWMutex). Once paired, `proWatcher` health-checks the Pro every 60s and, on failure, re-discovers

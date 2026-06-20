@@ -50,9 +50,9 @@ modes.
 ## Quick start (Docker)
 
 ```bash
-# 1. Start the service. Pairing with the Bridge Pro runs automatically via the guided
-#    setup wizard in the web UI (Cloud-Discovery only) on port 33100 — just briefly TAP
-#    the link button on the Pro when prompted (do not hold it).
+# 1. Start the service. Pairing with the Hue Bridge Pro runs automatically via the guided
+#    setup wizard in the web UI (local mDNS discovery) on port 33100 — just briefly TAP
+#    the link button on the Hue Bridge Pro when prompted (do not hold it).
 docker compose up -d
 
 # 2. On the TV, start the Ambilight+Hue bridge search and select relumeTV.

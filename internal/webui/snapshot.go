@@ -96,12 +96,12 @@ type Snapshot struct {
 	// FirstRun is true when no config file existed at startup (a fresh install), for
 	// the wizard's "first run" label.
 	FirstRun bool `json:"firstRun"`
-	// DiscoveredHost is the Hue Bridge Pro host found via cloud discovery BEFORE
+	// DiscoveredHost is the Hue Bridge Pro host found via mDNS discovery BEFORE
 	// pairing (GetPro has no host until paired), shown as "found at <ip>" in step 1.
 	DiscoveredHost string `json:"discoveredHost,omitempty"`
 	// BridgeIsPro is whether the discovered bridge is a real Pro (modelid BSB003).
 	BridgeIsPro bool `json:"bridgeIsPro"`
-	// WebLookupOK is whether the Philips cloud discovery lookup is reachable.
+	// WebLookupOK is whether the local mDNS discovery subsystem is working.
 	WebLookupOK bool `json:"webLookupOK"`
 	// ProReachable is the live Pro reachability from the setup reachability poller
 	// (drives steps 3 and 5).
@@ -173,7 +173,7 @@ type StateSource interface {
 	FirstRun() bool
 	// SetupInfo bundles the discovery preconditions and live setup signals:
 	// discoveredHost (pre-pairing Pro host), bridgeIsPro (modelid BSB003), webLookupOK
-	// (cloud discovery reachable), proReachable (live), tvDescriptorSeen (step 2), and
+	// (mDNS discovery working), proReachable (live), tvDescriptorSeen (step 2), and
 	// precondMsg (the wizard banner text, empty when nothing to flag).
 	SetupInfo() (discoveredHost string, bridgeIsPro, webLookupOK, proReachable, tvDescriptorSeen bool, precondMsg string)
 }

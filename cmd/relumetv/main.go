@@ -682,25 +682,25 @@ func idleShouldFire(now, lastSeen time.Time, fired bool, idleTimeout time.Durati
 const setupWatcherInterval = 4 * time.Second
 
 // autoPairPro pairs relumeTV with the Hue Bridge Pro in the background, independently of
-// the TV side. It discovers the Pro via the Philips cloud (the only discovery path),
+// the TV side. It discovers the Pro via local mDNS (the only discovery path),
 // selects the first bridge that is really a Pro (modelid BSB003), pins the leaf
 // certificate, then polls until the user taps the Pro's physical link button (the one
 // step that cannot be automated). It reports the discovery preconditions to the setup
 // wizard, and on success persists the credentials, hot-loads the light backend and
 // starts the setup reachability watcher (steps 3 & 5).
 func autoPairPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, controlled *bridge.ControlledSet, live *liveColors, stats *proStats, setup *setupStatus, skipTLS bool, log *slog.Logger) {
+	// Browse mDNS for Hue bridges, excluding relumeTV's own announcement (it advertises
+	// itself as a Hue bridge to the TV under this same bridge id).
+	discover := func() ([]bridgepro.DiscoveredBridge, error) {
+		return bridgepro.Discover(cfg.Identity.BridgeID())
+	}
 	var host, discoveryID string
 	for host == "" {
-		h, id, modelID, derr := selectProForPairing(bridgepro.Discover, bridgepro.FetchModelID, log)
-		// Default backoff between cloud-discovery attempts. discovery.meethue.com throttles
-		// hard (it returns 429 with a long Retry-After when polled too often, regardless of
-		// whether a bridge is present), so this is deliberately slow; the rate-limited case
-		// below overrides it with the server's own hint.
-		retry := 60 * time.Second
+		h, id, modelID, derr := selectProForPairing(discover, bridgepro.FetchModelID, log)
 		switch {
 		case derr == nil && h != "":
 			host, discoveryID = h, id
-			log.Info("hue bridge pro discovered", "host", host, "modelid", modelID, "via", "Philips cloud (discovery.meethue.com)")
+			log.Info("hue bridge pro discovered", "host", host, "modelid", modelID, "via", "mDNS (_hue._tcp.local)")
 			setup.setPrecond(true, host, true, "")
 		case errors.Is(derr, ErrNoProBridge):
 			// (b) a bridge was found but it is not a Pro — surface the actual modelid.
@@ -708,33 +708,24 @@ func autoPairPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, c
 			log.Warn("hue bridge pro not paired yet: discovered bridge is not a Hue Bridge Pro; retrying", "err", derr)
 			setup.setPrecond(true, "", false, msg)
 		case errors.Is(derr, ErrProModelUnknown):
-			// (c)-ish a bridge was found but unreachable for its modelid.
+			// (c)-ish a bridge was found but unreachable to confirm its modelid.
 			log.Warn("hue bridge pro not paired yet: a bridge was found but is unreachable to confirm it is a Hue Bridge Pro; retrying", "err", derr)
 			setup.setPrecond(true, "", false, "A bridge was found but could not be reached to confirm it is a Hue Bridge Pro. Is it powered on?")
-		case errors.Is(derr, bridgepro.ErrCloudRateLimited):
-			// Philips is throttling our discovery polling — NOT a user problem and not a
-			// statement about whether the bridge is on. Back off for the server-requested
-			// Retry-After and keep searching quietly (no alarm banner; the step shows
-			// "Looking for your Hue Bridge Pro…").
-			var rle *bridgepro.RateLimitedError
-			if errors.As(derr, &rle) && rle.RetryAfter > 0 {
-				retry = rle.RetryAfter
-			}
-			log.Info("hue bridge pro discovery: Philips cloud rate-limited — backing off (not an error)", "retry_after", retry.String())
-			setup.setPrecond(true, "", false, "")
 		case derr != nil:
-			// (c) cloud lookup failed for some other reason (no internet / DNS / TLS).
-			log.Warn("hue bridge pro not paired yet: cloud discovery (discovery.meethue.com) unavailable — turn the hue bridge pro on (or check this host's internet access); retrying", "err", derr)
-			setup.setPrecond(false, "", false, "Can't reach the Philips discovery service. Turn your Hue Bridge Pro on and make sure this host has internet access.")
+			// (c) the mDNS discovery subsystem itself failed (no multicast interface, etc.).
+			log.Warn("hue bridge pro not paired yet: mDNS discovery unavailable — turn the hue bridge pro on and check this host is on the same network; retrying", "err", derr)
+			setup.setPrecond(false, "", false, "Can't run local (mDNS) discovery. Turn your Hue Bridge Pro on and make sure this host is on the same network.")
 		default:
-			// (a) discovery worked but returned no bridges at all → the bridge is off/absent.
-			log.Warn("hue bridge pro not paired yet: no bridge found via cloud discovery — turn the hue bridge pro on; retrying")
+			// (a) discovery worked but found no bridge → the Hue Bridge Pro is off/absent.
+			log.Warn("hue bridge pro not paired yet: no bridge found via mDNS — turn the hue bridge pro on; retrying")
 			setup.setPrecond(true, "", false, "No Hue Bridge Pro found yet — please turn it on and connect it to the same network.")
 		}
 		if host != "" {
 			break
 		}
-		if !sleepCtx(ctx, retry) {
+		// mDNS is local and unthrottled, so we can retry briskly while the user powers on
+		// or connects the bridge.
+		if !sleepCtx(ctx, 10*time.Second) {
 			return
 		}
 	}

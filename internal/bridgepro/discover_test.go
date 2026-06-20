@@ -2,12 +2,11 @@ package bridgepro
 
 import (
 	"crypto/tls"
-	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 )
 
 // proHost strips the scheme from a TLS test server URL, yielding the host:port that
@@ -81,20 +80,26 @@ func TestFetchModelID_SkipsTLSVerification(t *testing.T) {
 	}
 }
 
-func TestDiscover_rateLimitedReturnsRateLimitedError(t *testing.T) {
-	// Discover's URL is hardcoded to the real cloud, so exercise the Retry-After parsing
-	// and the error type (the two pieces of the 429 handling) directly.
-	if got := parseRetryAfter("54"); got != 54*time.Second {
-		t.Fatalf("parseRetryAfter(54) = %s, want 54s", got)
+func TestParseHueTXT(t *testing.T) {
+	bid, mid := parseHueTXT([]string{"bridgeid=001788FFFEAABBCC", "modelid=BSB003", "other=x"})
+	if bid != "001788FFFEAABBCC" {
+		t.Errorf("bridgeid = %q", bid)
 	}
-	if got := parseRetryAfter(""); got != 60*time.Second {
-		t.Fatalf("parseRetryAfter(empty) = %s, want 60s fallback", got)
+	if mid != "BSB003" {
+		t.Errorf("modelid = %q", mid)
 	}
-	if got := parseRetryAfter("99999"); got != 5*time.Minute {
-		t.Fatalf("parseRetryAfter(huge) = %s, want 5m ceiling", got)
+	// Missing keys yield empty strings, malformed entries are ignored.
+	bid, mid = parseHueTXT([]string{"novalue", ""})
+	if bid != "" || mid != "" {
+		t.Errorf("expected empty, got bridgeid=%q modelid=%q", bid, mid)
 	}
-	var rle = &RateLimitedError{RetryAfter: 54 * time.Second}
-	if !errors.Is(rle, ErrCloudRateLimited) {
-		t.Fatal("RateLimitedError must satisfy errors.Is(ErrCloudRateLimited)")
+}
+
+func TestFirstIPv4(t *testing.T) {
+	if got := firstIPv4([]net.IP{net.ParseIP("fe80::1"), net.ParseIP("192.168.1.5")}); got != "192.168.1.5" {
+		t.Errorf("firstIPv4 = %q, want 192.168.1.5", got)
+	}
+	if got := firstIPv4([]net.IP{net.ParseIP("fe80::1")}); got != "" {
+		t.Errorf("firstIPv4 (no v4) = %q, want empty", got)
 	}
 }
