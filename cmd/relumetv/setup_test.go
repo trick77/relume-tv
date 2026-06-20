@@ -58,21 +58,20 @@ func TestSetup_CommittedConfigStartsDone(t *testing.T) {
 	}
 }
 
-// TestSetup_Step3NoFlickerWhenProUpAtStart is advisor blocking #1: at step 3 with the
-// Pro reachable (the normal state, since step 1 paired it), the machine must NOT advance
-// — it waits for the reachable->unreachable transition.
-func TestSetup_Step3NoFlickerWhenProUpAtStart(t *testing.T) {
+// TestSetup_PowerOffNoFlickerWhenProUpAtStart is advisor blocking #1: at the power-off
+// step (now step 2, right after pairing) with the Pro reachable (the normal state), the
+// machine must NOT advance — it waits for the reachable->unreachable transition.
+func TestSetup_PowerOffNoFlickerWhenProUpAtStart(t *testing.T) {
 	st, cfg, _, _ := newTestSetup(t)
 	pairPro(t, cfg)
-	st.recomputeNow()         // step 1 -> 2
-	st.markTVDescriptorSeen() // step 2 -> 3
+	st.recomputeNow() // step 1 -> 2 (power-off)
 	if got := st.CurrentStep(); got != stepProPowerOff {
 		t.Fatalf("step = %d, want %d (at power-off step)", got, stepProPowerOff)
 	}
-	// The poller reports the Pro is up (t=0): must stay on step 3, no flicker forward.
+	// The poller reports the Pro is up (t=0): must stay, no flicker forward.
 	st.setReachable(true)
 	if got := st.CurrentStep(); got != stepProPowerOff {
-		t.Fatalf("step flickered to %d on a reachable Pro; must stay at step 3", got)
+		t.Fatalf("step flickered to %d on a reachable Pro; must stay at power-off", got)
 	}
 	st.setReachable(true) // still up
 	if got := st.CurrentStep(); got != stepProPowerOff {
@@ -80,29 +79,29 @@ func TestSetup_Step3NoFlickerWhenProUpAtStart(t *testing.T) {
 	}
 }
 
-// TestSetup_FullHappyPath walks all six steps in order and asserts the deferred commit
-// fires exactly once at the end.
+// TestSetup_FullHappyPath walks all six steps in order (pair → power-off → reboot →
+// scan → power-on → assign) and asserts the deferred commit fires exactly once.
 func TestSetup_FullHappyPath(t *testing.T) {
 	st, cfg, active, commits := newTestSetup(t)
 
 	// Step 1 -> 2: Pro paired.
 	pairPro(t, cfg)
 	st.recomputeNow()
-	if got := st.CurrentStep(); got != stepRebootTV {
-		t.Fatalf("after pairing step = %d, want %d", got, stepRebootTV)
-	}
-
-	// Step 2 -> 3: TV fetched the descriptor.
-	st.markTVDescriptorSeen()
 	if got := st.CurrentStep(); got != stepProPowerOff {
-		t.Fatalf("after descriptor step = %d, want %d", got, stepProPowerOff)
+		t.Fatalf("after pairing step = %d, want %d", got, stepProPowerOff)
 	}
 
-	// Poller confirms the Pro is up, then it goes down -> step 3 -> 4.
+	// Step 2 -> 3: Pro confirmed up, then powered off.
 	st.setReachable(true)
 	st.setReachable(false)
+	if got := st.CurrentStep(); got != stepRebootTV {
+		t.Fatalf("after power-off step = %d, want %d", got, stepRebootTV)
+	}
+
+	// Step 3 -> 4: the TV rebooted and fetched the descriptor.
+	st.markTVDescriptorSeen()
 	if got := st.CurrentStep(); got != stepTVScan {
-		t.Fatalf("after power-off step = %d, want %d", got, stepTVScan)
+		t.Fatalf("after descriptor step = %d, want %d", got, stepTVScan)
 	}
 
 	// Step 4 -> 5: the TV pairs while the Pro is off.
@@ -142,60 +141,70 @@ func TestSetup_FullHappyPath(t *testing.T) {
 	}
 }
 
-// TestSetup_Step5OnlyAfterStep3 ensures step 5's reachable check is gated behind step 3:
-// a reachable Pro during steps before 5 must not be mistaken for "Pro back on".
-func TestSetup_Step5OnlyAfterStep3(t *testing.T) {
+// TestSetup_PowerOnOnlyAfterPowerOff ensures the power-on check (step 5) is gated behind
+// the power-off step: a reachable Pro before the power-off transition must not be mistaken
+// for "Pro back on".
+func TestSetup_PowerOnOnlyAfterPowerOff(t *testing.T) {
 	st, cfg, _, _ := newTestSetup(t)
 	pairPro(t, cfg)
-	st.recomputeNow()
-	st.markTVDescriptorSeen() // now at step 3
-	// Many reachable reports while at step 3 must never jump to step 5/6.
+	st.recomputeNow() // step 2 (power-off)
+	// Many reachable reports while at the power-off step must never jump ahead.
 	for i := 0; i < 5; i++ {
 		st.setReachable(true)
 	}
 	if got := st.CurrentStep(); got != stepProPowerOff {
-		t.Fatalf("step = %d, want %d — must not reach step 5 logic before step 3 completes", got, stepProPowerOff)
+		t.Fatalf("step = %d, want %d — power-on logic must not run before power-off completes", got, stepProPowerOff)
 	}
 }
 
-// TestSetup_DescriptorIgnoredBeforeStep2 is advisor blocking #1: a descriptor fetch that
-// arrives while the machine is still at step 1 must NOT latch and skip the reboot step.
-func TestSetup_DescriptorIgnoredBeforeStep2(t *testing.T) {
+// TestSetup_DescriptorIgnoredBeforeRebootStep is advisor blocking #1: a descriptor fetch
+// arriving before the reboot step (now step 3) must NOT latch and skip it.
+func TestSetup_DescriptorIgnoredBeforeRebootStep(t *testing.T) {
 	st, cfg, _, _ := newTestSetup(t)
-	// TV probes the descriptor during ordinary discovery, before the Pro is paired.
+	// TV probes the descriptor during ordinary discovery, at step 1.
 	st.markTVDescriptorSeen()
 	if st.TVDescriptorSeen() {
-		t.Fatal("descriptor latched at step 1 — would skip the reboot step")
+		t.Fatal("descriptor latched at step 1")
 	}
-	// Now pair the Pro: step 1 -> 2. The descriptor must still be required.
+	// Pair: step 1 -> 2 (power-off).
 	pairPro(t, cfg)
 	st.recomputeNow()
-	if got := st.CurrentStep(); got != stepRebootTV {
-		t.Fatalf("step = %d, want %d (reboot still required)", got, stepRebootTV)
-	}
-	// A real fetch now (at step 2) advances.
-	st.markTVDescriptorSeen()
 	if got := st.CurrentStep(); got != stepProPowerOff {
-		t.Fatalf("step = %d, want %d after a step-2 descriptor fetch", got, stepProPowerOff)
+		t.Fatalf("step = %d, want %d", got, stepProPowerOff)
+	}
+	// Probe at step 2 — still ignored (reboot is step 3).
+	st.markTVDescriptorSeen()
+	if st.TVDescriptorSeen() {
+		t.Fatal("descriptor latched at the power-off step — would skip the reboot step")
+	}
+	// Power-off transition -> step 3 (reboot).
+	st.setReachable(true)
+	st.setReachable(false)
+	if got := st.CurrentStep(); got != stepRebootTV {
+		t.Fatalf("step = %d, want %d (reboot)", got, stepRebootTV)
+	}
+	// A real fetch now (at the reboot step) advances.
+	st.markTVDescriptorSeen()
+	if got := st.CurrentStep(); got != stepTVScan {
+		t.Fatalf("step = %d, want %d after a reboot-step descriptor fetch", got, stepTVScan)
 	}
 }
 
-// TestSetup_LatchSurvivesRecompute checks the down-edge latch holds across later
-// recomputes (a reachable report after the Pro was powered off must not un-advance step 3).
+// TestSetup_LatchSurvivesRecompute checks the power-off down-edge latch holds across later
+// recomputes (a reachable report after the Pro was powered off must not un-advance).
 func TestSetup_LatchSurvivesRecompute(t *testing.T) {
 	st, cfg, _, _ := newTestSetup(t)
 	pairPro(t, cfg)
-	st.recomputeNow()
-	st.markTVDescriptorSeen()
-	st.setReachable(true)
-	st.setReachable(false) // step 3 -> 4
-	if got := st.CurrentStep(); got != stepTVScan {
-		t.Fatalf("step = %d, want %d", got, stepTVScan)
+	st.recomputeNow()      // step 2 (power-off)
+	st.setReachable(true)  // confirmed up
+	st.setReachable(false) // powered off: step 2 -> 3
+	if got := st.CurrentStep(); got != stepRebootTV {
+		t.Fatalf("step = %d, want %d", got, stepRebootTV)
 	}
 	// A spurious reachable report (e.g. the Pro briefly answers) must not regress.
 	st.setReachable(true)
-	if got := st.CurrentStep(); got != stepTVScan {
-		t.Fatalf("step regressed/advanced to %d on a spurious reachable; want %d", got, stepTVScan)
+	if got := st.CurrentStep(); got != stepRebootTV {
+		t.Fatalf("step regressed/advanced to %d on a spurious reachable; want %d", got, stepRebootTV)
 	}
 }
 

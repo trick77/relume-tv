@@ -61,7 +61,6 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/state", s.handleState)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
-	mux.HandleFunc("POST /api/setup/continue", s.handleSetupContinue)
 
 	sub, _ := fs.Sub(assetsFS, "assets")
 	mux.Handle("/", http.FileServer(http.FS(sub)))
@@ -71,15 +70,6 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(BuildSnapshot(s.src))
-}
-
-// handleSetupContinue is the step-2 fallback button ("I've rebooted — continue"). It
-// forces the wizard's descriptor signal and pushes a refreshed snapshot so the browser
-// advances immediately.
-func (s *Server) handleSetupContinue(w http.ResponseWriter, _ *http.Request) {
-	s.src.ContinueSetup()
-	s.hub.SetSnapshot(BuildSnapshot(s.src))
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {

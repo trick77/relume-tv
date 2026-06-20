@@ -176,10 +176,6 @@ type StateSource interface {
 	// (cloud discovery reachable), proReachable (live), tvDescriptorSeen (step 2), and
 	// precondMsg (the wizard banner text, empty when nothing to flag).
 	SetupInfo() (discoveredHost string, bridgeIsPro, webLookupOK, proReachable, tvDescriptorSeen bool, precondMsg string)
-	// ContinueSetup is the UI-only step-2 fallback ("I've rebooted — continue"): it
-	// forces the descriptor signal so the wizard proceeds even if isTVRequest did not
-	// recognise the TV's descriptor fetch. A no-op outside step 2.
-	ContinueSetup()
 }
 
 func rfc3339(t time.Time) string {

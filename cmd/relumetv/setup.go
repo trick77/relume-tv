@@ -12,8 +12,8 @@ import (
 // snapshot (steps 3 and 5 are transitions, not stateless predicates — see recompute).
 const (
 	stepPairPro     = 1 // pair the Hue Bridge Pro (proPaired)
-	stepRebootTV    = 2 // reboot the TV (its UA fetches /description.xml)
-	stepProPowerOff = 3 // disconnect the Pro from power (reachable -> unreachable)
+	stepProPowerOff = 2 // disconnect the Pro from power (reachable -> unreachable)
+	stepRebootTV    = 3 // reboot the TV (its UA fetches /description.xml)
 	stepTVScan      = 4 // the TV scans and pairs with relumeTV (tvClients > 0)
 	stepProPowerOn  = 5 // power the Pro back on (reachable again)
 	stepAssignBulbs = 6 // assign bulbs / first TV data drives the lights
@@ -169,19 +169,6 @@ func (s *setupStatus) markTVDescriptorSeen() {
 	s.notifyChange()
 }
 
-// continueAfterReboot is the UI-only fallback for step 2 ("I've rebooted — continue"):
-// it forces the descriptor signal so the wizard proceeds even if isTVRequest did not
-// recognise the TV's descriptor fetch. Headless relies solely on the automatic hook.
-func (s *setupStatus) continueAfterReboot() {
-	s.mu.Lock()
-	if s.step == stepRebootTV {
-		s.tvDescriptorSeen = true
-		s.recompute()
-	}
-	s.mu.Unlock()
-	s.notifyChange()
-}
-
 // recomputeNow re-evaluates the machine after an external signal changed (e.g. the Pro
 // was paired). Safe to call from any goroutine.
 func (s *setupStatus) recomputeNow() {
@@ -203,15 +190,15 @@ func (s *setupStatus) recompute() {
 		switch s.step {
 		case stepPairPro:
 			if proPaired {
-				next = stepRebootTV
-			}
-		case stepRebootTV:
-			if s.tvDescriptorSeen {
 				next = stepProPowerOff
 			}
 		case stepProPowerOff:
 			// Transition, latched: the Pro must have been seen up and now be down.
 			if s.everReachable && !s.proReachable {
+				next = stepRebootTV
+			}
+		case stepRebootTV:
+			if s.tvDescriptorSeen {
 				next = stepTVScan
 			}
 		case stepTVScan:
@@ -219,7 +206,7 @@ func (s *setupStatus) recompute() {
 				next = stepProPowerOn
 			}
 		case stepProPowerOn:
-			// Only evaluated after step 3 completed (monotone gating): the Pro is back.
+			// Only evaluated after the power-off step completed (monotone gating): the Pro is back.
 			if s.proReachable {
 				next = stepAssignBulbs
 			}

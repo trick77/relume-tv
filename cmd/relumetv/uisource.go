@@ -97,9 +97,6 @@ func (u *uiSource) SetupInfo() (discoveredHost string, bridgeIsPro, webLookupOK,
 	return discoveredHost, bridgeIsPro, webLookupOK, proReachable, tvDescriptorSeen, precondMsg
 }
 
-// ContinueSetup is the step-2 fallback ("I've rebooted — continue").
-func (u *uiSource) ContinueSetup() { u.setup.continueAfterReboot() }
-
 // Active reports whether the TV is currently driving any light — tied to the same
 // 2s freshness window as the driven count, so the header "Active/Idle" state, the
 // Lights "driven" count and the flash button stay consistent (no window where the

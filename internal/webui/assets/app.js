@@ -219,18 +219,9 @@ const SETUP_STEPS = [
           : "Looking for your Hue Bridge Pro…",
   },
   {
-    title: "Reboot your TV",
-    body: () =>
-      "On the TV: <b>Android Settings → Device Preferences → Restart</b>. After it boots, the TV re-detects relumeTV.",
-    action: () =>
-      `<div class="action"><span class="dot pulse"></span>
-         <div><div class="big">Waiting for the TV to reboot…</div></div>
-         <button class="btn" data-action="continue-setup">I've rebooted — continue</button></div>`,
-  },
-  {
     title: "Disconnect the Hue Bridge Pro from power",
     body: (s) =>
-      s.currentStep > 3
+      s.currentStep > 2
         ? "Hue Bridge Pro is off — detected."
         : `Pull the power on the Hue Bridge Pro now. ${
             s.proReachable ? "We'll detect it (still reachable…)." : "We'll detect it."
@@ -238,6 +229,13 @@ const SETUP_STEPS = [
     action: (s) =>
       `<div class="action"><span class="dot pulse"></span>
          <div><div class="big">${s.proReachable ? "Hue Bridge Pro still reachable…" : "Waiting…"}</div></div></div>`,
+  },
+  {
+    title: "Reboot your TV",
+    body: () =>
+      "On the TV: <b>Android Settings → Device Preferences → Restart</b>. After it boots, the TV re-detects relumeTV automatically.",
+    action: () =>
+      `<div class="action"><span class="dot pulse"></span><div><div class="big">Waiting for the TV to reboot…</div></div></div>`,
   },
   {
     title: "Start the relumeTV scan on your TV",
@@ -401,15 +399,6 @@ document.addEventListener("focusin", (e) => {
   if (icon) showTip(icon);
 });
 document.addEventListener("focusout", hideTip);
-// Step-2 fallback button: tell the backend the TV has rebooted so the wizard proceeds
-// even if the automatic descriptor detection missed the TV's fetch. UI-only path.
-document.addEventListener("click", (e) => {
-  const btn = e.target.closest?.('[data-action="continue-setup"]');
-  if (!btn) return;
-  btn.disabled = true;
-  fetch("/api/setup/continue", { method: "POST" }).catch(() => {});
-});
-
 document.addEventListener("click", (e) => {
   const icon = e.target.closest?.(".info[data-tip]");
   if (!icon) {
