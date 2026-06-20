@@ -82,6 +82,12 @@ type Server struct {
 	// non-empty lights array. Wired by main to ProStreamer.SetRequestedMembers so the
 	// Pro entertainment_configuration is restricted to exactly that subset.
 	OnGroupMembers func(v1ids []uint16)
+
+	// OnDescriptorFetch, if set, is called whenever the TV (identified by isTVRequest)
+	// fetches GET /description.xml. The setup wizard uses it as the "TV rebooted"
+	// signal (step 2): a fresh TV reboot re-fetches the descriptor. Wired by main to
+	// setupStatus.markTVDescriptorSeen.
+	OnDescriptorFetch func()
 }
 
 // defaultDTLSFallbackTimeout is how long relumeTV waits, after confirming the TV's
@@ -448,6 +454,17 @@ func (s *Server) isTVRequest(r *http.Request) bool {
 }
 
 func (s *Server) handleDescription(w http.ResponseWriter, r *http.Request) {
+	// Setup wizard step-2 signal: the TV re-fetches the descriptor after a reboot. Fire
+	// only for the TV (isTVRequest), never an arbitrary LAN probe. Log the actual
+	// User-Agent so a TV whose UA isTVRequest fails to match is diagnosable (then the
+	// UI fallback button is the manual path) — the descriptor heuristic is unverified
+	// against real hardware, so the real UA must be visible.
+	if s.isTVRequest(r) {
+		s.log.Info("descriptor fetched by TV", "user-agent", r.UserAgent(), "from", r.RemoteAddr)
+		if s.OnDescriptorFetch != nil {
+			s.OnDescriptorFetch()
+		}
+	}
 	xml, err := upnp.Render(s.cfg.Identity, s.advIP, s.httpPort)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

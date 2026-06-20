@@ -136,15 +136,27 @@ body {
 .logrow .msg { color: var(--dim); min-width: 0; }
 .logrow .attrs { color: var(--faint); min-width: 0; word-break: break-word; }
 
-/* setup assistant (vertical stepper) */
+/* setup assistant (vertical stepper). The step number is vertically CENTERED against
+   its card; the connecting line is drawn as an absolute segment from just below the
+   number down through the gap to the next step's rail. */
 .steps { display: flex; flex-direction: column; gap: 14px; }
 .step { display: flex; gap: 16px; }
-.steps .rail { display: flex; flex-direction: column; align-items: center; }
+.steps .step { align-items: stretch; }
+.steps .rail {
+  position: relative; width: 30px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
 .num {
+  position: relative; z-index: 1;
   width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
   font-weight: 700; font-size: 13px; flex-shrink: 0; border: 1px solid var(--line); background: var(--panel2); color: var(--dim);
 }
-.steps .line { flex: 1; width: 2px; background: var(--line); margin: 4px 0; }
+/* From just below the centered number to the bottom of the card plus the inter-step
+   gap, so it visually links to the next step's number. */
+.steps .line {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  top: calc(50% + 19px); bottom: -23px; width: 2px; background: var(--line);
+}
 .steps .step.done .num { background: rgba(34, 197, 94, .15); border-color: rgba(34, 197, 94, .5); color: var(--ok); }
 .steps .step.done .line { background: rgba(34, 197, 94, .4); }
 .steps .step.active .num { background: rgba(124, 140, 255, .18); border-color: var(--accent); color: var(--accent); box-shadow: 0 0 16px rgba(124, 140, 255, .35); }
@@ -161,3 +173,11 @@ body {
   border: 1px solid var(--line); border-radius: 10px; padding: 13px 15px;
 }
 .action .big { font-size: 13px; font-weight: 600; }
+.btn {
+  margin-left: auto; flex-shrink: 0; cursor: pointer;
+  background: rgba(124, 140, 255, .14); border: 1px solid var(--accent); color: var(--accent);
+  font-size: 12px; font-weight: 600; padding: 8px 13px; border-radius: 8px;
+  font-family: inherit;
+}
+.btn:hover { background: rgba(124, 140, 255, .24); }
+.btn:disabled { opacity: .5; cursor: default; }

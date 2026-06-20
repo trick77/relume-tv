@@ -1232,3 +1232,53 @@ func TestSetLightState_noSubsetForwardsAll(t *testing.T) {
 		t.Fatalf("light 9 not forwarded with no subset declared: %v", p.got)
 	}
 }
+
+func mustGetUA(t *testing.T, url, userAgent string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("new request %s: %v", url, err)
+	}
+	if userAgent != "" {
+		req.Header.Set("User-Agent", userAgent)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	return resp
+}
+
+func TestDescriptor_OnDescriptorFetch_firesOnlyForTVRequest(t *testing.T) {
+	// Given: a server with the descriptor hook wired
+	s, ts := newTestServer(t)
+	fired := 0
+	s.OnDescriptorFetch = func() { fired++ }
+
+	// When: a non-TV client (default Go UA) fetches the descriptor
+	resp := mustGetUA(t, ts.URL+"/description.xml", "")
+	resp.Body.Close()
+
+	// Then: the hook does NOT fire for an arbitrary LAN probe
+	if fired != 0 {
+		t.Fatalf("OnDescriptorFetch fired for a non-TV request (count = %d)", fired)
+	}
+
+	// When: the TV (its Android/Dalvik UA) fetches the descriptor
+	resp = mustGetUA(t, ts.URL+"/description.xml", tvUserAgent)
+	resp.Body.Close()
+
+	// Then: the hook fires exactly once
+	if fired != 1 {
+		t.Fatalf("OnDescriptorFetch fired %d times for a TV request, want 1", fired)
+	}
+}
+
+func TestDescriptor_OnDescriptorFetch_nilSafe(t *testing.T) {
+	// Given: no hook wired (nil)
+	_, ts := newTestServer(t)
+
+	// When/Then: a TV descriptor fetch must not panic
+	resp := mustGetUA(t, ts.URL+"/description.xml", tvUserAgent)
+	resp.Body.Close()
+}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -12,23 +13,33 @@ import (
 	"github.com/trick77/relumetv/internal/config"
 )
 
-// resolveProHost determines the Hue Bridge Pro's current host. When bridgeIP is set
-// it is returned verbatim (no discovery, empty discoveryID). Otherwise it runs
-// cloud discovery and applies the M6 id-matching:
+// Setup precondition sentinels for the initial pairing selection (selectProForPairing).
+// They let autoPairPro classify a failed discovery into the three wizard-reportable
+// preconditions: (a) no bridge, (b) not a Pro, (c) cloud lookup down.
+var (
+	// ErrNoProBridge: discovery returned bridge(s) but none is a Hue Bridge Pro
+	// (their modelid is not BSB003). The wrapped message names the observed modelid(s).
+	ErrNoProBridge = errors.New("no hue bridge pro (BSB003) among the discovered bridges")
+	// ErrProModelUnknown: bridge(s) were discovered but none could be queried for its
+	// modelid (unreachable at :443). Distinct from ErrNoProBridge so the precondition
+	// reads (c)-ish "found but unreachable", not the misleading (b) "not a Pro".
+	ErrProModelUnknown = errors.New("discovered bridge(s) unreachable to read modelid")
+)
+
+// resolveProHost determines a paired Hue Bridge Pro's current host for a RECONNECT,
+// via cloud discovery (the only discovery path now — the manual -bridge-ip override was
+// removed). It applies the M6 id-matching:
 //
-//   - want != "" (a reconnect with a stored DiscoveryID): pick the discovered
-//     bridge whose id == want. If none matches, return an empty host (the caller
-//     retries) — never fall back to bridges[0], which could target a DIFFERENT
-//     bridge on a multi-bridge LAN, the exact thing DiscoveryID exists to prevent.
-//   - want == "" (initial pairing, or a legacy install with no stored id): pick
-//     bridges[0] and LOG that fallback so multi-bridge LANs are diagnosable.
+//   - want != "" (a reconnect with a stored DiscoveryID): pick the discovered bridge
+//     whose id == want. If none matches, return an empty host (the caller retries) —
+//     never fall back to bridges[0], which could target a DIFFERENT bridge on a
+//     multi-bridge LAN, the exact thing DiscoveryID exists to prevent.
+//   - want == "" (a legacy install with no stored id): pick bridges[0] and LOG that
+//     fallback so multi-bridge LANs are diagnosable.
 //
-// On success it returns the chosen host plus the discovered bridge's id so the
-// caller can persist it (DiscoveryID) for future reconnects.
-func resolveProHost(bridgeIP, want string, discover func() ([]bridgepro.DiscoveredBridge, error), log *slog.Logger) (host, discoveryID string, err error) {
-	if bridgeIP != "" {
-		return bridgeIP, "", nil
-	}
+// On success it returns the chosen host plus the discovered bridge's id so the caller
+// can persist it (DiscoveryID) for future reconnects.
+func resolveProHost(want string, discover func() ([]bridgepro.DiscoveredBridge, error), log *slog.Logger) (host, discoveryID string, err error) {
 	bridges, derr := discover()
 	if derr != nil {
 		return "", "", derr
@@ -49,13 +60,55 @@ func resolveProHost(bridgeIP, want string, discover func() ([]bridgepro.Discover
 	// Always log it (louder when several are present, since that is the case where
 	// blindly taking the first risks the wrong bridge on a multi-bridge LAN).
 	if len(bridges) > 1 {
-		log.Warn("hue bridge pro discovery via Philips cloud (discovery.meethue.com): no stored discovery id, multiple bridges found — picking the first; pass -bridge-ip to disambiguate",
+		log.Warn("hue bridge pro discovery via Philips cloud (discovery.meethue.com): no stored discovery id, multiple bridges found — picking the first",
 			"count", len(bridges), "picked", bridges[0].InternalIPAddress)
 	} else {
 		log.Info("hue bridge pro discovery via Philips cloud (discovery.meethue.com): no stored discovery id — picking the only discovered bridge",
 			"picked", bridges[0].InternalIPAddress)
 	}
 	return bridges[0].InternalIPAddress, bridges[0].ID, nil
+}
+
+// selectProForPairing runs cloud discovery for the INITIAL pairing and returns the
+// first discovered bridge that is really a Hue Bridge Pro (modelid BSB003), folding the
+// Pro check into the multi-bridge selection (so it never blindly pairs bridges[0], which
+// could be a non-Pro Hue bridge on the LAN). It returns the chosen host, its discovery
+// id, and — for the wizard banner and diagnostics — the observed modelid.
+//
+// Error classification for the wizard preconditions:
+//   - discover error            → returned verbatim          → (c) cloud lookup down
+//   - len(bridges) == 0         → host=="" , err==nil        → (a) no bridge found
+//   - bridge(s) responded, none BSB003 → ErrNoProBridge      → (b) not a Pro
+//   - bridge(s) found, none reachable for modelid → ErrProModelUnknown → (c)-ish
+func selectProForPairing(discover func() ([]bridgepro.DiscoveredBridge, error), fetchModel func(host string) (string, error), log *slog.Logger) (host, discoveryID, modelID string, err error) {
+	bridges, derr := discover()
+	if derr != nil {
+		return "", "", "", derr
+	}
+	if len(bridges) == 0 {
+		return "", "", "", nil
+	}
+	anyResponded := false
+	seen := make([]string, 0, len(bridges))
+	for _, b := range bridges {
+		mid, merr := fetchModel(b.InternalIPAddress)
+		if merr != nil {
+			log.Warn("hue bridge pro selection: could not read modelid (bridge unreachable?)", "host", b.InternalIPAddress, "err", merr)
+			continue
+		}
+		anyResponded = true
+		if mid == bridgepro.ModelHueBridgePro {
+			return b.InternalIPAddress, b.ID, mid, nil
+		}
+		// Loud, with the ACTUAL modelid: if ModelHueBridgePro is ever wrong, this is the
+		// breadcrumb that explains why every Pro is being rejected.
+		log.Warn("hue bridge pro selection: discovered bridge is not a Pro", "host", b.InternalIPAddress, "modelid", mid, "want", bridgepro.ModelHueBridgePro)
+		seen = append(seen, mid)
+	}
+	if anyResponded {
+		return "", "", "", fmt.Errorf("%w (found modelid %v, want %s)", ErrNoProBridge, seen, bridgepro.ModelHueBridgePro)
+	}
+	return "", "", "", fmt.Errorf("%w: %d discovered", ErrProModelUnknown, len(bridges))
 }
 
 // pinProShell builds the *config.BridgePro shell for a host: it pins the leaf
@@ -89,9 +142,16 @@ type proWatcher struct {
 	controlled *bridge.ControlledSet
 	liveColors *liveColors
 	stats      *proStats
-	bridgeIP   string
 	skipTLS    bool
 	log        *slog.Logger
+
+	// interval is the health-check cadence. Default 60s; the setup wizard sets a
+	// faster cadence (~4s) so steps 3 and 5 (Pro power-cycle) feel responsive.
+	interval time.Duration
+	// onReachable, if set, is called every tick with the Pro's current reachability so
+	// the setup state machine can drive steps 3 and 5. Called whether or not the value
+	// changed (the machine re-evaluates its level-read steps each tick).
+	onReachable func(reachable bool)
 
 	healthCheck      func(*config.BridgePro) error
 	discover         func() ([]bridgepro.DiscoveredBridge, error)
@@ -100,14 +160,13 @@ type proWatcher struct {
 }
 
 // newProWatcher constructs a proWatcher with the production seams wired in.
-func newProWatcher(cfg *config.Config, clip *clipv1.Server, controlled *bridge.ControlledSet, live *liveColors, stats *proStats, bridgeIP string, skipTLS bool, log *slog.Logger) *proWatcher {
+func newProWatcher(cfg *config.Config, clip *clipv1.Server, controlled *bridge.ControlledSet, live *liveColors, stats *proStats, skipTLS bool, log *slog.Logger) *proWatcher {
 	w := &proWatcher{
 		cfg:        cfg,
 		clip:       clip,
 		controlled: controlled,
 		liveColors: live,
 		stats:      stats,
-		bridgeIP:   bridgeIP,
 		skipTLS:    skipTLS,
 		log:        log,
 	}
@@ -131,7 +190,10 @@ func newProWatcher(cfg *config.Config, clip *clipv1.Server, controlled *bridge.C
 // cancelled. It backfills the Pro's name/id once up front (for installs paired
 // before those were captured), then loops calling tick.
 func (w *proWatcher) run(ctx context.Context) {
-	const checkInterval = 60 * time.Second
+	checkInterval := w.interval
+	if checkInterval <= 0 {
+		checkInterval = 60 * time.Second
+	}
 	pro := w.cfg.GetPro()
 	if pro == nil {
 		return
@@ -160,12 +222,14 @@ func (w *proWatcher) run(ctx context.Context) {
 func (w *proWatcher) tick() (reconnected bool) {
 	pro := w.cfg.GetPro()
 	if pro == nil {
+		w.reportReachable(false)
 		return false
 	}
 
 	err := w.healthCheck(pro)
 	if err == nil {
-		return false // still reachable
+		w.reportReachable(true) // still reachable
+		return false
 	}
 	// M3: a 503 "command queue full" (or a per-attribute domain rejection) means the
 	// Pro is reachable but busy. Re-discovering / re-pinning then is harmful churn —
@@ -173,6 +237,7 @@ func (w *proWatcher) tick() (reconnected bool) {
 	// (or any non-queue/non-domain error) proceeds to re-discover.
 	if errors.Is(err, bridgepro.ErrQueueFull) || errors.Is(err, bridgepro.ErrDomain) {
 		w.log.Warn("hue bridge pro busy (command queue full) — not re-discovering; backing off", "", pro, "err", err)
+		w.reportReachable(true) // reachable, just busy
 		return false
 	}
 
@@ -180,13 +245,14 @@ func (w *proWatcher) tick() (reconnected bool) {
 		"Turn it back on (or check its power/network cable); "+
 		"relumeTV can't control the lights until it is back. Retrying.", "", pro, "err", err)
 
-	host, discoveryID, derr := resolveProHost(w.bridgeIP, pro.DiscoveryID, w.discover, w.log)
+	host, discoveryID, derr := resolveProHost(pro.DiscoveryID, w.discover, w.log)
 	if derr != nil || host == "" {
-		if pro.DiscoveryID != "" && w.bridgeIP == "" {
+		if pro.DiscoveryID != "" {
 			w.log.Warn("hue bridge pro reconnect: stored bridge not found via discovery; will retry", "discoveryId", pro.DiscoveryID, "err", derr)
 		} else {
 			w.log.Warn("hue bridge pro reconnect: not found via discovery; will retry", "err", derr)
 		}
+		w.reportReachable(false)
 		return false
 	}
 
@@ -195,26 +261,40 @@ func (w *proWatcher) tick() (reconnected bool) {
 		fp, ferr := w.fetchFingerprint(host)
 		if ferr != nil {
 			w.log.Warn("hue bridge pro reconnect: cert fetch failed; will retry", "host", host, "err", ferr)
+			w.reportReachable(false)
 			return false
 		}
 		certSHA = fp
 	}
 
 	updated := reconnectProConfig(pro, host, certSHA, w.skipTLS)
-	// A discovered id (when discovery, not -bridge-ip, was used) refreshes the stored
-	// one; otherwise reconnectProConfig already carried the old DiscoveryID forward.
+	// A discovered id refreshes the stored one; otherwise reconnectProConfig already
+	// carried the old DiscoveryID forward.
 	if discoveryID != "" {
 		updated.DiscoveryID = discoveryID
 	}
 	if verr := w.healthCheck(updated); verr != nil {
 		w.log.Warn("hue bridge pro reconnect: still unreachable", "host", host, "err", verr)
+		w.reportReachable(false)
 		return false
 	}
 	if serr := w.cfg.SetPro(updated); serr != nil {
 		w.log.Error("persisting reconnected hue bridge pro", "err", serr)
+		w.reportReachable(false)
 		return false
 	}
 	w.applyProvider(updated)
 	w.log.Info("hue bridge pro reconnected", "", updated)
+	// The reconnect found the Pro at a (possibly new DHCP) IP and validated it — this is
+	// exactly the step-5 "Pro back on" signal, including after a power-cycle changed the IP.
+	w.reportReachable(true)
 	return true
+}
+
+// reportReachable forwards the Pro's current reachability to the setup state machine
+// (no-op when no callback is wired, e.g. for the steady-state watcher after setup).
+func (w *proWatcher) reportReachable(reachable bool) {
+	if w.onReachable != nil {
+		w.onReachable(reachable)
+	}
 }

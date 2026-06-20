@@ -205,39 +205,91 @@ function tickLiveness() {
     : "—";
 }
 
+// SETUP_STEPS are the six wizard steps. body(s) returns the step's description HTML,
+// and the optional action(s) returns extra UI shown only while the step is active. The
+// state machine lives in the backend; this is a pure renderer of s.currentStep.
+const SETUP_STEPS = [
+  {
+    title: "Pair Hue Bridge Pro",
+    body: (s) =>
+      s.currentStep > 1
+        ? `${esc(s.proName || "Hue Bridge Pro")} · ${esc(s.proHost || s.discoveredHost)} · certificate pinned`
+        : s.discoveredHost
+          ? `Hue Bridge Pro found at <b>${esc(s.discoveredHost)}</b>. Briefly press the link button on top of the bridge.`
+          : "Looking for your Hue Bridge Pro…",
+  },
+  {
+    title: "Reboot your TV",
+    body: () =>
+      "On the TV: <b>Settings → Device Preferences → About → Restart</b>. After it boots, the TV re-detects relumeTV.",
+    action: () =>
+      `<div class="action"><span class="dot pulse"></span>
+         <div><div class="big">Waiting for the TV to reboot…</div></div>
+         <button class="btn" data-action="continue-setup">I've rebooted — continue</button></div>`,
+  },
+  {
+    title: "Disconnect the Hue Bridge Pro from power",
+    body: (s) =>
+      s.currentStep > 3
+        ? "Hue Bridge Pro is off — detected."
+        : `Pull the power on the Hue Bridge Pro now. ${
+            s.proReachable ? "We'll detect it (still reachable…)." : "We'll detect it."
+          }`,
+    action: (s) =>
+      `<div class="action"><span class="dot pulse"></span>
+         <div><div class="big">${s.proReachable ? "Hue Bridge Pro still reachable…" : "Waiting…"}</div></div></div>`,
+  },
+  {
+    title: "Start the relumeTV scan on your TV",
+    body: (s) =>
+      `In the TV's <b>Ambilight+Hue</b> settings, start the bridge search and pick relumeTV. Advertised as “${esc(s.bridgeName)}”.`,
+    action: () =>
+      `<div class="action"><span class="dot pulse"></span><div><div class="big">Waiting for the TV to pair…</div></div></div>`,
+  },
+  {
+    title: "Turn the Hue Bridge Pro back on",
+    body: (s) =>
+      s.currentStep > 5
+        ? "Hue Bridge Pro is back — detected."
+        : "Plug the Hue Bridge Pro back in. relumeTV reconnects automatically (even if its IP changed).",
+    action: () =>
+      `<div class="action"><span class="dot pulse"></span><div><div class="big">Waiting for the Hue Bridge Pro…</div></div></div>`,
+  },
+  {
+    title: "Assign your color bulbs, then press Finish",
+    body: (s) =>
+      `In the TV's Ambilight+Hue menu, assign your color bulbs and press <b>Finish</b>. ${s.lights.length} lights loaded from the Hue Bridge Pro.`,
+    action: () =>
+      `<div class="action"><span class="dot pulse"></span><div><div class="big">Waiting for the first Ambilight data…</div></div></div>`,
+  },
+];
+
 function renderSetup(s) {
-  const proPill = s.proPaired ? `<span class="pill ok">done</span>` : `<span class="pill wait">waiting</span>`;
-  const tvPill = s.tvClients.length ? `<span class="pill ok">done</span>` : `<span class="pill wait">waiting</span>`;
+  const cur = s.currentStep || 1;
+  const banner =
+    s.precondMsg && cur === 1
+      ? `<div class="card pending"><h3>⚠ Needs attention</h3><div class="d">${esc(s.precondMsg)}</div></div>`
+      : "";
+  const steps = SETUP_STEPS.map((step, i) => {
+    const n = i + 1;
+    const state = cur > n ? "done" : cur === n ? "active" : "todo";
+    const last = n === SETUP_STEPS.length;
+    const num = cur > n ? "✓" : String(n);
+    const action = state === "active" && step.action ? step.action(s) : "";
+    return `
+      <div class="step ${state}">
+        <div class="rail"><div class="num">${num}</div>${last ? "" : `<div class="line"></div>`}</div>
+        <div class="card"><h3>${esc(step.title)}</h3>
+          <div class="d">${step.body(s)}</div>
+          ${action}</div>
+      </div>`;
+  }).join("");
   app.innerHTML = `
     <div class="wrap">
-      <div class="top"><div class="brand">re<span>lume</span></div><div class="ver">v${esc(s.version)} · first run</div></div>
-      <p class="lead">Three steps until your Ambilight TV drives the Hue Bridge Pro again.</p>
-      <div class="steps">
-        <div class="step ${s.proPaired ? "done" : "active"}">
-          <div class="rail"><div class="num">${s.proPaired ? "✓" : "1"}</div><div class="line"></div></div>
-          <div class="card"><h3>Pair Hue Bridge Pro ${proPill}</h3>
-            <div class="d">${
-              s.proPaired
-                ? `${esc(s.proName)} · ${esc(s.proHost)} · certificate pinned`
-                : "Briefly press the link button on the Hue Bridge Pro."
-            }</div></div>
-        </div>
-        <div class="step ${s.proPaired ? (s.tvClients.length ? "done" : "active") : "todo"}">
-          <div class="rail"><div class="num">${s.tvClients.length ? "✓" : "2"}</div><div class="line"></div></div>
-          <div class="card"><h3>Connect your TV ${tvPill}</h3>
-            <div class="d">On the TV, start the Ambilight+Hue bridge search and pick relumeTV. Advertised as “${esc(s.bridgeName)}”.</div>
-            ${
-              !s.tvClients.length
-                ? `<div class="action"><span class="dot pulse"></span><div><div class="big">Waiting for TV search…</div></div></div>`
-                : ""
-            }</div>
-        </div>
-        <div class="step ${s.tvClients.length ? "active" : "todo"}">
-          <div class="rail"><div class="num">3</div></div>
-          <div class="card"><h3>Check lights &amp; go</h3>
-            <div class="d">${s.lights.length} lights loaded from the Hue Bridge Pro.</div></div>
-        </div>
-      </div>
+      <div class="top"><div class="brand">re<span>lume</span></div><div class="ver">v${esc(s.version)}${s.firstRun ? " · first run" : ""}</div></div>
+      <p class="lead">Six steps until your Ambilight TV drives the Hue Bridge Pro.</p>
+      ${banner}
+      <div class="steps">${steps}</div>
     </div>`;
 }
 
@@ -293,7 +345,11 @@ const logRow = (e) =>
 function render(s) {
   _startedAtMs = s.startedAt ? Date.parse(s.startedAt) : null;
   _lastActivityMs = s.lastActivity ? Date.parse(s.lastActivity) : null;
-  if (s.proPaired && s.tvClients.length > 0) renderDashboard(s);
+  // Steady-state gate: the backend's committed setup-complete state decides, NOT the
+  // live TV activity — so an idle/off TV after setup keeps the dashboard instead of
+  // flipping back to the wizard. The first TV activity is what commits the setup
+  // (backend), and from then on setupComplete stays true across restarts.
+  if (s.setupComplete) renderDashboard(s);
   else renderSetup(s);
   tickUptime();
   tickLiveness();
@@ -345,6 +401,15 @@ document.addEventListener("focusin", (e) => {
   if (icon) showTip(icon);
 });
 document.addEventListener("focusout", hideTip);
+// Step-2 fallback button: tell the backend the TV has rebooted so the wizard proceeds
+// even if the automatic descriptor detection missed the TV's fetch. UI-only path.
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest?.('[data-action="continue-setup"]');
+  if (!btn) return;
+  btn.disabled = true;
+  fetch("/api/setup/continue", { method: "POST" }).catch(() => {});
+});
+
 document.addEventListener("click", (e) => {
   const icon = e.target.closest?.(".info[data-tip]");
   if (!icon) {
