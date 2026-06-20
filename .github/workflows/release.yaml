@@ -41,10 +41,13 @@ jobs:
           esac
           NEXT="$MA.$MI.$PA"
           SHORT=$(git rev-parse --short HEAD)
+          # GHCR repository names must be lowercase; the repo slug contains "relumeTV".
+          IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
           echo "version=$NEXT" >> "$GITHUB_OUTPUT"
           echo "major=$MA"     >> "$GITHUB_OUTPUT"
           echo "minor=$MI"     >> "$GITHUB_OUTPUT"
           echo "short=$SHORT"  >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE"  >> "$GITHUB_OUTPUT"
           echo "Bumping $LATEST -> $NEXT ($BUMP) at $SHORT" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Create and push tag
@@ -73,10 +76,10 @@ jobs:
           build-args: |
             RELUMETV_VERSION=${{ steps.ver.outputs.version }}
           tags: |
-            ghcr.io/${{ github.repository }}:${{ steps.ver.outputs.version }}
-            ghcr.io/${{ github.repository }}:${{ steps.ver.outputs.major }}.${{ steps.ver.outputs.minor }}
-            ghcr.io/${{ github.repository }}:${{ steps.ver.outputs.major }}
-            ghcr.io/${{ github.repository }}:${{ steps.ver.outputs.short }}
-            ghcr.io/${{ github.repository }}:latest
+            ${{ steps.ver.outputs.image }}:${{ steps.ver.outputs.version }}
+            ${{ steps.ver.outputs.image }}:${{ steps.ver.outputs.major }}.${{ steps.ver.outputs.minor }}
+            ${{ steps.ver.outputs.image }}:${{ steps.ver.outputs.major }}
+            ${{ steps.ver.outputs.image }}:${{ steps.ver.outputs.short }}
+            ${{ steps.ver.outputs.image }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
