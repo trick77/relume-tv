@@ -87,12 +87,12 @@ function streamVal(s) {
 // the REST paths it also carries the outgoing write rate so both directions are visible.
 function streamSub(s) {
   switch (s.health) {
-    case "streaming-pro": return "DTLS → Pro";
+    case "streaming-pro": return "DTLS → Hue Bridge Pro";
     case "entertainment-fallback": return `REST fallback · ${s.proWriteRate || 0} writes/s`;
-    case "active-rest": return "REST → Pro";
+    case "active-rest": return "REST → Hue Bridge Pro";
     case "idle": return "TV not driving";
     case "no-tv": return "no TV paired";
-    default: return "Pro not paired";
+    default: return "Hue Bridge Pro not paired";
   }
 }
 
@@ -129,7 +129,7 @@ function backpressureVal(s) {
 // errors only while the warning is active, otherwise it states the benign meaning.
 function backpressureSub(s) {
   if (forwardErrActive(s)) return `${s.forwardErrors} failed Pro writes`;
-  return "Avoided extra Pro writes";
+  return "Avoided extra writes";
 }
 
 // modeLabel renders the live forward path for display: "Entertainment" as a word,
