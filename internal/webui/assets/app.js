@@ -262,11 +262,31 @@ const SETUP_STEPS = [
   },
 ];
 
+// layoutStepperLines positions each connector line from the bottom of its step's circle
+// to the top of the next step's circle, with a symmetric gap so the line never touches
+// either circle. Driven by the real geometry (circles are vertically centered in their
+// variable-height cards), which pure CSS can't reach across to the next card.
+function layoutStepperLines() {
+  const steps = [...document.querySelectorAll(".steps .step")];
+  const gap = 7; // breathing space between a line end and a circle
+  for (let i = 0; i < steps.length - 1; i++) {
+    const line = steps[i].querySelector(".line");
+    if (!line) continue;
+    const rail = steps[i].querySelector(".rail").getBoundingClientRect();
+    const cur = steps[i].querySelector(".num").getBoundingClientRect();
+    const next = steps[i + 1].querySelector(".num").getBoundingClientRect();
+    const top = cur.bottom + gap - rail.top; // rail-relative
+    const height = next.top - gap - (cur.bottom + gap);
+    line.style.top = top + "px";
+    line.style.height = Math.max(0, height) + "px";
+  }
+}
+
 function renderSetup(s) {
   const cur = s.currentStep || 1;
   const banner =
     s.precondMsg && cur === 1
-      ? `<div class="card pending"><h3>⚠ Needs attention</h3><div class="d">${esc(s.precondMsg)}</div></div>`
+      ? `<div class="card pending setup-banner"><h3>⚠ Needs attention</h3><div class="d">${esc(s.precondMsg)}</div></div>`
       : "";
   const steps = SETUP_STEPS.map((step, i) => {
     const n = i + 1;
@@ -289,6 +309,7 @@ function renderSetup(s) {
       ${banner}
       <div class="steps">${steps}</div>
     </div>`;
+  layoutStepperLines();
 }
 
 function renderDashboard(s) {
@@ -361,6 +382,12 @@ function pushLog(e) {
   const logEl = document.getElementById("log");
   if (logEl) logEl.innerHTML = logLines.map(logRow).join("");
 }
+
+// Re-flow the stepper connector lines when the viewport resizes (card heights, and thus
+// circle positions, can change with width). No-op when the wizard isn't shown.
+window.addEventListener("resize", () => {
+  if (document.querySelector(".steps")) layoutStepperLines();
+});
 
 // Tooltip for .info[data-tip] icons. The element lives on <body> (not inside the
 // .pipe, whose overflow:hidden would clip it) and is positioned under the icon.
