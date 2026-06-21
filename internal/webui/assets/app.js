@@ -53,15 +53,20 @@ function currentMode(s) {
   return s.dtlsStreamUp ? "entertainment" : "rest";
 }
 
-// modeSub describes the active forward path under the MODE label. The MODE value
-// already shows REST/Entertainment (and "(fallback)"), so the sub must NOT repeat
-// it — it only adds the reason: a fallback's cause, the TV not streaming, or what
-// the plain REST path does.
-function modeSub(s) {
-  if (s.dtlsStreamUp) return "DTLS stream up";
-  if (s.fallback) return "DTLS unavailable";
-  if (s.mode === "entertainment") return "TV not streaming entertainment";
-  return "Per-light writes to the Hue Bridge Pro";
+// proPathSub describes the live forward path to the Hue Bridge Pro, shown under the
+// Mode card. Every active path reads uniformly as "<protocol> → Hue Bridge Pro" (DTLS
+// while streaming, REST otherwise — including the fallback, whose "(fallback)" tag
+// already sits on the Mode value). Idle/unpaired states have no active path, so they
+// explain why.
+function proPathSub(s) {
+  switch (s.health) {
+    case "streaming-pro":          return "DTLS → Hue Bridge Pro";
+    case "entertainment-fallback": return "REST → Hue Bridge Pro";
+    case "active-rest":            return "REST → Hue Bridge Pro";
+    case "idle":                   return "TV not driving";
+    case "no-tv":                  return "no TV paired";
+    default:                       return "Hue Bridge Pro not paired";
+  }
 }
 
 // jitterDisplay shows how much relumeTV's easing cut the stream's brightness jitter —
@@ -109,7 +114,7 @@ function backpressureVal(s) {
 // call site inserts it without esc().
 function backpressureSub(s) {
   if (forwardErrActive(s)) return `${esc(s.forwardErrors)} failed Hue Bridge Pro writes`;
-  return "Avoided extra writes<br>to Hue Bridge Pro";
+  return "Avoided extra writes";
 }
 
 // modeLabel renders the live forward path for display: "Entertainment" as a word,
@@ -160,15 +165,28 @@ let _lastActivityMs = null;
 const fmtSinceLive = 2500;
 function fmtSince(ms) {
   if (!(ms >= 0)) return "—";
-  if (ms < fmtSinceLive) return "live";
+  if (ms < fmtSinceLive) return "Live";
   return fmtUptime(ms) + " ago";
+}
+// livenessSub shows the live forward rate to the Hue Bridge Pro under the Liveness
+// card, picked by mode so it reads truthfully in both: the outgoing DTLS frame rate
+// while streaming (proSendFps, falling back to the TV input rate before relumeTV emits
+// its own frames), the REST write rate on the fallback/REST paths, and a dash when
+// nothing is driving the Pro.
+function livenessSub(s) {
+  switch (s.health) {
+    case "streaming-pro":          return `${s.proSendFps || s.streamFps || 0} fps`;
+    case "entertainment-fallback": return `${s.proWriteRate || 0} writes/s`;
+    case "active-rest":            return `${s.proWriteRate || 0} writes/s`;
+    default:                       return "—";
+  }
 }
 function tickLiveness() {
   const el = document.getElementById("liveness");
   if (!el) return;
   el.innerHTML = _lastActivityMs
     ? (Date.now() - _lastActivityMs < fmtSinceLive
-        ? `<span class="ok">●</span> live`
+        ? `<span class="ok">●</span> Live`
         : esc(fmtSince(Date.now() - _lastActivityMs)))
     : "—";
 }
@@ -309,14 +327,14 @@ function renderDashboard(s) {
       <div class="pipe">
         <div class="step"><div class="lbl">Hue Bridge Pro</div><div class="val">${s.proPaired ? `<span class="ok">✓</span> Paired` : "— Unpaired"}</div><div class="sub">${esc(s.proHost)}${s.proBridgeId ? `<br>${esc(s.proBridgeId.toUpperCase())}` : ""}</div></div>
         <div class="step"><div class="lbl">TV pairing</div><div class="val">${s.tvClients.length ? "Philips TV" : "—"}</div><div class="sub">${s.tvClients.map(c => esc(tvModel(c))).join("<br>")}</div></div>
-        <div class="step"><div class="lbl">Mode <span class="info" tabindex="0" data-tip="Entertainment: low-latency DTLS stream to the Hue Bridge Pro (default). REST: per-light REST writes — the automatic fallback when the TV is not streaming entertainment.">i</span></div><div class="val">${modeLabel(s)}${s.fallback ? " (fallback)" : ""}</div><div class="sub">${esc(modeSub(s))}</div></div>
+        <div class="step"><div class="lbl">Mode <span class="info" tabindex="0" data-tip="Entertainment: low-latency DTLS stream to the Hue Bridge Pro (default). REST: per-light REST writes — the automatic fallback when the TV is not streaming entertainment.">i</span></div><div class="val">${modeLabel(s)}${s.fallback ? " (fallback)" : ""}</div><div class="sub">${esc(proPathSub(s))}</div></div>
         <div class="step"><div class="lbl">Uptime</div><div class="val" id="uptime">${s.startedAt ? esc("↑ " + fmtUptime(Date.now() - Date.parse(s.startedAt))) : "—"}</div><div class="sub">Running</div></div>
       </div>
       <div class="pipe row2">
         <div class="step"><div class="lbl">Lights</div><div class="val">${driven}</div><div class="sub">Driven by TV</div></div>
         <div class="step"><div class="lbl">Jitter <span class="info" tabindex="0" data-tip="Jitter is the largest brightness jump between two consecutive frames. relumeTV eases each colour toward the latest TV frame with a ${s.smoothingTauMs || 40} ms time constant, so the TV's hard scene cuts reach the lamps as a fast fade instead of a flicker. The figure is the reduction this buys: −45% means the biggest jump on the stream sent to the Hue Bridge Pro is 45% smaller than on the TV input — more negative is smoother. Smoothing applies on the DTLS path to the Hue Bridge Pro; the figure reads 0% when there is no such stream, when nothing jumped, or when the cut passed through unsmoothed (e.g. tau set to 0).">i</span></div><div class="val">${jitterDisplay(s)}</div><div class="sub">vs TV input</div></div>
         <div class="step"><div class="lbl">Backpressure <span class="info" tabindex="0" data-tip="Drops/s: Ambilight frames relumeTV coalesced away because the Hue Bridge Pro could not keep up — healthy, it spares the Hue Bridge Pro writes it cannot accept. Errors: failed writes to the Hue Bridge Pro (unreachable / 503 overflow) — the real fault signal.">i</span></div><div class="val">${backpressureVal(s)}</div><div class="sub">${backpressureSub(s)}</div></div>
-        <div class="step"><div class="lbl">Liveness</div><div class="val" id="liveness">—</div><div class="sub">Since last write</div></div>
+        <div class="step"><div class="lbl">Liveness</div><div class="val" id="liveness">—</div><div class="sub">${esc(livenessSub(s))}</div></div>
       </div>
       <div class="grid">${pending}
         <div class="card"><h3>Lights <span class="cnt">${shown.length} shown · ${driven} driven</span></h3><div class="lights">${lights}</div></div>
