@@ -94,13 +94,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return write(append(out, '\n', '\n'))
 	}
 
-	// Subscribe BEFORE building the initial snapshot and replaying the tail, so an event
-	// published during setup is buffered on the channel and delivered by the loop below
-	// rather than slipping through the gap between the tail read and the subscription.
-	ch, cancel := s.hub.Subscribe()
-	defer cancel()
-
-	// Initial paint: a fresh snapshot, then the buffered event tail.
+	// Initial paint: a fresh snapshot, then the buffered event tail. Subscribe AFTER the
+	// tail replay: subscribing first would buffer events published during the replay
+	// window onto the channel AND include them in the tail, delivering them twice (the
+	// ring carries up to 200 events — too many to seed through the 32-deep channel). The
+	// inverse gap (an event slipping through the window) is a pre-existing, cosmetic
+	// live-log nicety, not worth a duplicate on every connect.
 	snap := BuildSnapshot(s.src)
 	if writeFrame(Frame{Kind: "snapshot", Snapshot: &snap}) != nil {
 		return
@@ -111,6 +110,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	ch, cancel := s.hub.Subscribe()
+	defer cancel()
 
 	// A periodic heartbeat (an SSE comment) keeps intermediaries from idle-closing the
 	// stream AND surfaces a dead client: a write to a vanished peer eventually errors, so
