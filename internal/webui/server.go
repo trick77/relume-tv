@@ -80,35 +80,59 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
 
-	write := func(f Frame) {
-		b, _ := json.Marshal(f)
-		_, _ = w.Write([]byte("data: "))
-		_, _ = w.Write(b)
-		_, _ = w.Write([]byte("\n\n"))
+	write := func(b []byte) error {
+		if _, err := w.Write(b); err != nil {
+			return err
+		}
 		flusher.Flush()
+		return nil
 	}
+	writeFrame := func(f Frame) error {
+		b, _ := json.Marshal(f)
+		out := append([]byte("data: "), b...)
+		return write(append(out, '\n', '\n'))
+	}
+
+	// Subscribe BEFORE building the initial snapshot and replaying the tail, so an event
+	// published during setup is buffered on the channel and delivered by the loop below
+	// rather than slipping through the gap between the tail read and the subscription.
+	ch, cancel := s.hub.Subscribe()
+	defer cancel()
 
 	// Initial paint: a fresh snapshot, then the buffered event tail.
 	snap := BuildSnapshot(s.src)
-	write(Frame{Kind: "snapshot", Snapshot: &snap})
+	if writeFrame(Frame{Kind: "snapshot", Snapshot: &snap}) != nil {
+		return
+	}
 	for _, e := range s.hub.Events() {
 		e := e
-		write(Frame{Kind: "event", Event: &e})
+		if writeFrame(Frame{Kind: "event", Event: &e}) != nil {
+			return
+		}
 	}
 
-	ch, cancel := s.hub.Subscribe()
-	defer cancel()
+	// A periodic heartbeat (an SSE comment) keeps intermediaries from idle-closing the
+	// stream AND surfaces a dead client: a write to a vanished peer eventually errors, so
+	// the handler returns, cancel() runs, and the snapshot loop stops polling the
+	// queue-sensitive Pro for an audience that is no longer there.
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-heartbeat.C:
+			if write([]byte(": ping\n\n")) != nil {
+				return
+			}
 		case f, ok := <-ch:
 			if !ok {
 				return
 			}
-			write(f)
+			if writeFrame(f) != nil {
+				return
+			}
 		}
 	}
 }
