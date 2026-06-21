@@ -53,11 +53,21 @@ function currentMode(s) {
   return s.dtlsStreamUp ? "entertainment" : "rest";
 }
 
+// modeSub describes the active forward path under the MODE label. The MODE value
+// already shows REST/Entertainment (and "(fallback)"), so the sub must NOT repeat
+// it — it only adds the reason: a fallback's cause, the TV not streaming, or what
+// the plain REST path does.
+function modeSub(s) {
+  if (s.dtlsStreamUp) return "DTLS stream up";
+  if (s.fallback) return "DTLS unavailable";
+  if (s.mode === "entertainment") return "TV not streaming entertainment";
+  return "Per-light writes to the Hue Bridge Pro";
+}
+
 // streamVal shows the live entertainment frame rate while the TV is streaming to the
 // Pro: it shows the TV input rate, plus relumeTV's upsampled send rate (in → out fps)
 // when relumeTV is emitting its own frames (proSendFps>0); on the REST paths it shows
-// relumeTV's outgoing write rate to the Pro (writes/s). Idle/unpaired states show a dash
-// — the Mode card's path line explains why.
+// relumeTV's outgoing write rate to the Pro (writes/s). Idle/unpaired states show a dash.
 function streamVal(s) {
   switch (s.health) {
     case "streaming-pro":
@@ -74,21 +84,6 @@ function streamVal(s) {
       return `<span class="ok">●</span> ${s.proWriteRate || 0} writes/s`;
     default:
       return "—";
-  }
-}
-
-// proPathSub describes the live forward path to the Hue Bridge Pro, shown under the Mode
-// card. It covers BOTH the DTLS and the REST states (so REST mode reads correctly too):
-// DTLS while streaming to the Pro, the REST variants otherwise, and the idle/unpaired
-// reasons. The Mode value already shows Entertainment/REST, so this only adds the target.
-function proPathSub(s) {
-  switch (s.health) {
-    case "streaming-pro": return "DTLS → Hue Bridge Pro";
-    case "entertainment-fallback": return `REST fallback · ${s.proWriteRate || 0} writes/s`;
-    case "active-rest": return "REST → Hue Bridge Pro";
-    case "idle": return "TV not driving";
-    case "no-tv": return "no TV paired";
-    default: return "Hue Bridge Pro not paired";
   }
 }
 
@@ -337,7 +332,7 @@ function renderDashboard(s) {
       <div class="pipe">
         <div class="step"><div class="lbl">Hue Bridge Pro</div><div class="val">${s.proPaired ? `<span class="ok">✓</span> Paired` : "— Unpaired"}</div><div class="sub">${esc(s.proHost)}${s.proBridgeId ? `<br>${esc(s.proBridgeId.toUpperCase())}` : ""}</div></div>
         <div class="step"><div class="lbl">TV pairing</div><div class="val">${s.tvClients.length ? "Philips TV" : "—"}</div><div class="sub">${s.tvClients.map(c => esc(tvModel(c))).join("<br>")}</div></div>
-        <div class="step"><div class="lbl">Mode <span class="info" tabindex="0" data-tip="Entertainment: low-latency DTLS stream to the Hue Bridge Pro (default). REST: per-light REST writes — the automatic fallback when the TV is not streaming entertainment.">i</span></div><div class="val">${modeLabel(s)}${s.fallback ? " (fallback)" : ""}</div><div class="sub">${esc(proPathSub(s))}</div></div>
+        <div class="step"><div class="lbl">Mode <span class="info" tabindex="0" data-tip="Entertainment: low-latency DTLS stream to the Hue Bridge Pro (default). REST: per-light REST writes — the automatic fallback when the TV is not streaming entertainment.">i</span></div><div class="val">${modeLabel(s)}${s.fallback ? " (fallback)" : ""}</div><div class="sub">${esc(modeSub(s))}</div></div>
         <div class="step"><div class="lbl">Uptime</div><div class="val" id="uptime">${s.startedAt ? esc("↑ " + fmtUptime(Date.now() - Date.parse(s.startedAt))) : "—"}</div><div class="sub">Running</div></div>
       </div>
       <div class="pipe row2">
