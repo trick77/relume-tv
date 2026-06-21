@@ -161,7 +161,7 @@ func parseServeOptions(args []string) (serveOptions, error) {
 // summary cadence) is unit-testable without launching any listener.
 type serveConfig struct {
 	entertainmentMode bool          // control path: entertainment (DTLS) vs rest-follow
-	idleOff           time.Duration // resolved idle-off timeout (mode default unless overridden; 0 = disabled)
+	idleOff           time.Duration // idle-off timeout selected for the active mode (0 = disabled)
 	controlledWindow  time.Duration // sliding window for the currently-driven lights
 	windowRaised      bool          // true if controlledWindow was raised to exceed idle-off
 	activityWindow    time.Duration // cadence of the periodic activity summary
