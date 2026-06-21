@@ -99,6 +99,20 @@ func uiPortFor(opts serveOptions) int {
 	return uiDefaultPort
 }
 
+// idleOffUnset is the -idle-off-timeout sentinel meaning "use the mode default"
+// (resolved in deriveServeConfig). A real disable is 0; an explicit override is any
+// positive value.
+const idleOffUnset = -1 * time.Second
+
+// defaultIdleOffRest / defaultIdleOffEntertainment are the mode-dependent idle-off
+// defaults. REST writes are sparse (a few Hz, and pause on static scenes), so a longer
+// timeout avoids turning the lights off mid-viewing; the entertainment DTLS stream is
+// ~50 Hz and stops cleanly when the TV goes off, so a short timeout is safe and snappy.
+const (
+	defaultIdleOffRest          = 30 * time.Second
+	defaultIdleOffEntertainment = 5 * time.Second
+)
+
 func parseServeOptions(args []string) (serveOptions, error) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	cfgPath := fs.String("config", "relumetv.json", "path to the configuration file")
@@ -110,7 +124,7 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	burstInterval := fs.Duration("discovery-burst-interval", time.Second, "interval for discovery-burst announcements")
 	disableSSDP := fs.Bool("disable-ssdp", false, "do not run the SSDP responder (mDNS-only, like ha-hue-entertainment) — diagnostic")
 	skipTLS := fs.Bool("skip-tls-verify", false, "skip TLS verification to the Hue Bridge Pro (instead of cert pinning)")
-	idleOffTimeout := fs.Duration("idle-off-timeout", 5*time.Second, "when the TV stops sending light writes for this long, turn the lights off (0 = disabled)")
+	idleOffTimeout := fs.Duration("idle-off-timeout", idleOffUnset, "when the TV stops sending light writes for this long, turn the lights off (default 30s in rest mode, 5s in entertainment mode; 0 = disabled)")
 	controlledLightWindow := fs.Duration("controlled-light-window", time.Minute, "sliding window: a light counts as a current Ambilight light only if the TV drove it within this window; the restart/idle turn-off touches only those (so config changes are forgotten after the window)")
 	mode := fs.String("mode", "entertainment", "control mode: 'entertainment' (default, low-latency DTLS stream to the Pro; auto-falls back to REST if the TV never opens its stream) or 'rest' (per-light REST-follow)")
 	dtlsFallbackTimeout := fs.Duration("entertainment-dtls-timeout", 5*time.Second, "entertainment mode: how long to wait after confirming the TV's stream activation for the TV to open its DTLS stream on :2100 before reverting to REST-follow")
@@ -149,6 +163,7 @@ func parseServeOptions(args []string) (serveOptions, error) {
 // summary cadence) is unit-testable without launching any listener.
 type serveConfig struct {
 	entertainmentMode bool          // control path: entertainment (DTLS) vs rest-follow
+	idleOff           time.Duration // resolved idle-off timeout (mode default unless overridden; 0 = disabled)
 	controlledWindow  time.Duration // sliding window for the currently-driven lights
 	windowRaised      bool          // true if controlledWindow was raised to exceed idle-off
 	activityWindow    time.Duration // cadence of the periodic activity summary
@@ -171,11 +186,21 @@ func deriveServeConfig(opts serveOptions) (serveConfig, error) {
 		return serveConfig{}, fmt.Errorf("web UI port %d clashes with -http-port; choose another (e.g. %d)", uiPort, uiDefaultPort)
 	}
 
+	// Resolve the idle-off timeout: an unset flag takes the mode default, an explicit
+	// value (including 0 = disabled) is honoured as given.
+	idleOff := opts.idleOffTimeout
+	if idleOff < 0 {
+		idleOff = defaultIdleOffRest
+		if ent {
+			idleOff = defaultIdleOffEntertainment
+		}
+	}
+
 	// The controlled-light window must exceed the idle-off timeout, or the set would
 	// already be empty by the time idle-off fires (nothing left to turn off).
 	window := opts.controlledLightWindow
 	raised := false
-	if minWindow := opts.idleOffTimeout + 15*time.Second; opts.idleOffTimeout > 0 && window < minWindow {
+	if minWindow := idleOff + 15*time.Second; idleOff > 0 && window < minWindow {
 		window = minWindow
 		raised = true
 	}
@@ -188,6 +213,7 @@ func deriveServeConfig(opts serveOptions) (serveConfig, error) {
 
 	return serveConfig{
 		entertainmentMode: ent,
+		idleOff:           idleOff,
 		controlledWindow:  window,
 		windowRaised:      raised,
 		activityWindow:    activityWindow,
@@ -481,9 +507,9 @@ func runServe(args []string, log *slog.Logger) error {
 	// Detect the TV going silent (switched off / control session broke) and turn
 	// the lights off — the TV sends no off signal, it just stops writing. Disabled
 	// when the timeout is 0.
-	if opts.idleOffTimeout > 0 {
-		log.Info("idle-off monitor active", "timeout", opts.idleOffTimeout.String())
-		go monitorIdle(ctx, clip, cfg, controlled, opts.idleOffTimeout, log)
+	if sc.idleOff > 0 {
+		log.Info("idle-off monitor active", "timeout", sc.idleOff.String())
+		go monitorIdle(ctx, clip, cfg, controlled, sc.idleOff, log)
 	}
 
 	go func() {
