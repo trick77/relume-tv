@@ -76,7 +76,7 @@ function proPathSub(s) {
 function jitterDisplay(s) {
   if (!s.dtlsStreamUp || !s.jitterInBri) return "0%";
   const pct = Math.max(0, Math.round(100 * (1 - (s.jitterSentBri || 0) / s.jitterInBri)));
-  return pct > 0 ? `−${pct}%` : "0%";
+  return `${pct}%`;
 }
 
 // forwardErrDecayMs is how long the amber "N err" warning stays after the most
@@ -334,14 +334,14 @@ function renderDashboard(s) {
       </div>
       <div class="pipe row2">
         <div class="step"><div class="lbl">Lights</div><div class="val">${driven}</div><div class="sub">Driven by TV</div></div>
-        <div class="step"><div class="lbl">Jitter <span class="info" tabindex="0" data-tip="Jitter is the largest brightness jump between two consecutive frames. relumeTV eases each colour toward the latest TV frame with a ${s.smoothingTauMs || 40} ms time constant, so the TV's hard scene cuts reach the lamps as a fast fade instead of a flicker. The figure is the reduction this buys: −45% means the biggest jump on the stream sent to the Hue Bridge Pro is 45% smaller than on the TV input — more negative is smoother. Smoothing applies on the DTLS path to the Hue Bridge Pro; the figure reads 0% when there is no such stream, when nothing jumped, or when the cut passed through unsmoothed (e.g. tau set to 0).">i</span></div><div class="val">${jitterDisplay(s)}</div><div class="sub">vs TV input</div></div>
+        <div class="step"><div class="lbl">Jitter-reduction <span class="info" tabindex="0" data-tip="How much relumeTV's ${s.smoothingTauMs || 40} ms easing shrinks the biggest brightness jump on the DTLS stream to the Hue Bridge Pro vs the TV input. Higher is smoother; 0% when not streaming or nothing jumped.">i</span></div><div class="val">${jitterDisplay(s)}</div><div class="sub">vs TV input</div></div>
         <div class="step"><div class="lbl">Backpressure <span class="info" tabindex="0" data-tip="Drops/s: Ambilight frames relumeTV coalesced away because the Hue Bridge Pro could not keep up — healthy, it spares the Hue Bridge Pro writes it cannot accept. Errors: failed writes to the Hue Bridge Pro (unreachable / 503 overflow) — the real fault signal.">i</span></div><div class="val">${backpressureVal(s)}</div><div class="sub">${backpressureSub(s)}</div></div>
         <div class="step"><div class="lbl">Liveness</div><div class="val" id="liveness">${livenessVal()}</div><div class="sub">${esc(livenessSub(s))}</div></div>
       </div>
       <div class="grid">${pending}
         <div class="card"><h3>Lights <span class="cnt">${shown.length} shown · ${driven} driven</span></h3><div class="lights">${lights}</div></div>
       </div>
-      <div class="note"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg><b>Tip</b> — after relumeTV restarts, if the hue lights stop responding, open the TV's Ambilight menu and toggle the Ambilight function (not Hue+Ambilight menu) off and back to follow video.</div>
+      <div class="note"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg><b>Tip</b> — after relumeTV restarts, if the hue lights stop responding, open the TV's Ambilight menu and toggle the Ambilight style (not Hue+Ambilight menu) off and back to follow video.</div>
       <div class="card log${logCollapsed ? " collapsed" : ""}"><h3 class="log-head" role="button" tabindex="0" aria-expanded="${!logCollapsed}" aria-controls="log">Live events<span class="chev" aria-hidden="true"></span></h3><div id="log"></div></div>
     </div>`;
 }
