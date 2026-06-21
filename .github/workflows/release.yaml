@@ -41,7 +41,8 @@ jobs:
           esac
           NEXT="$MA.$MI.$PA"
           SHORT=$(git rev-parse --short HEAD)
-          # GHCR repository names must be lowercase; the repo slug contains "relume-tv".
+          # GHCR repository names must be lowercase; lowercase the repo slug defensively
+          # so the image ref stays valid regardless of how the owner/repo is cased.
           IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
           echo "version=$NEXT" >> "$GITHUB_OUTPUT"
           echo "major=$MA"     >> "$GITHUB_OUTPUT"
