@@ -108,13 +108,21 @@ const jitterStaleAfter = 12 * time.Second
 type jitterStats struct {
 	inputBri  atomic.Uint32
 	sentBri   atomic.Uint32
-	updatedAt atomic.Int64 // unix nanos of the last sent-side update
+	spikes    atomic.Uint32 // gated-median spikes suppressed in the last 5s window
+	updatedAt atomic.Int64  // unix nanos of the last sent-side update
 }
 
 func newJitterStats() *jitterStats { return &jitterStats{} }
 
 // setInput records the latest incoming-stream brightness jump.
 func (j *jitterStats) setInput(briJump uint32) { j.inputBri.Store(briJump) }
+
+// setSpikes records the count of spikes the gated median filter suppressed in the
+// latest 5s window (0 when the filter is off). Freshness is gated by setSent's stamp.
+func (j *jitterStats) setSpikes(n uint32) { j.spikes.Store(n) }
+
+// Spikes returns the latest per-window count of spikes the gated median filter dropped.
+func (j *jitterStats) Spikes() int { return int(j.spikes.Load()) }
 
 // setSent records the latest sent-stream brightness jump and stamps freshness. The
 // sent side only fires while relume-tv is streaming to the Pro over DTLS, so its

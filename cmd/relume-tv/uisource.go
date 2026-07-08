@@ -11,19 +11,21 @@ import (
 // uiSource adapts relume-tv's live state to webui.StateSource. It is read-only and
 // exposes no secrets (app/client keys, cert fingerprint never leave the core).
 type uiSource struct {
-	cfg           *config.Config
-	clip          *clipv1.Server
-	liveColors    *liveColors
-	frameStats    *frameStats
-	proSendStats  *frameStats
-	restRecvStats *frameStats
-	proStats      *proStats
-	jitterStats   *jitterStats
-	setup         *setupStatus
-	advName       string
-	version       string
-	started       time.Time
-	smoothTauMs   int
+	cfg             *config.Config
+	clip            *clipv1.Server
+	liveColors      *liveColors
+	frameStats      *frameStats
+	proSendStats    *frameStats
+	restRecvStats   *frameStats
+	proStats        *proStats
+	jitterStats     *jitterStats
+	setup           *setupStatus
+	advName         string
+	version         string
+	started         time.Time
+	smoothTauMs     int
+	medianWindow    int
+	medianThreshold int
 }
 
 func (u *uiSource) Version() string      { return u.version }
@@ -79,6 +81,16 @@ func (u *uiSource) SmoothingTauMs() int { return u.smoothTauMs }
 // Jitter returns the latest incoming vs smoothed-sent brightness jump and whether the
 // pair is fresh (false → UI longdash, i.e. not streaming to the Pro over DTLS).
 func (u *uiSource) Jitter() (inBri, sentBri int, ok bool) { return u.jitterStats.Reduction() }
+
+// MedianWindow / MedianThreshold are the configured gated median spike-filter knobs
+// (window <= 1 = filter off) — surfaced so the Jitter-reduction card shows the spike
+// count and settings only when the filter is enabled.
+func (u *uiSource) MedianWindow() int    { return u.medianWindow }
+func (u *uiSource) MedianThreshold() int { return u.medianThreshold }
+
+// SpikesSuppressed is the latest per-window count of crass spikes the gated median
+// filter dropped (0 when the filter is off or nothing was suppressed).
+func (u *uiSource) SpikesSuppressed() int { return u.jitterStats.Spikes() }
 
 // SetupComplete is the steady-state dashboard gate: the config has been committed AND
 // a Pro is paired AND a TV is paired. Deliberately NOT the live activity signal — once

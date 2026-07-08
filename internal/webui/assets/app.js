@@ -79,6 +79,26 @@ function jitterDisplay(s) {
   return `${pct}%`;
 }
 
+// jitterTip builds the Jitter-reduction card tooltip: the EMA easing explanation, plus
+// the gated median spike filter's window/threshold when it is enabled (window > 1).
+function jitterTip(s) {
+  let t = `How much relume-tv's ${s.smoothingTauMs || 40} ms easing shrinks the biggest brightness jump on the DTLS stream to the Hue Bridge Pro vs the TV input. Higher is smoother; 0% when not streaming or nothing jumped.`;
+  if (s.medianWindow > 1) {
+    t += ` Median spike filter on (window ${s.medianWindow}, threshold ${s.medianThreshold || 8000}): drops crass flicker spikes above the threshold with no trailing latency.`;
+  }
+  return t;
+}
+
+// jitterSub is the Jitter-reduction card sub-line: "vs TV input", plus the count of
+// crass spikes the gated median filter dropped in the last window when it is enabled.
+function jitterSub(s) {
+  // The spike figure only makes sense while streaming to the Pro over DTLS (the count
+  // shares the sent-side freshness gate); mirror jitterDisplay's dtlsStreamUp guard so
+  // the card never shows a stale "0/5s dropped" next to a 0% reduction when idle.
+  if (s.medianWindow > 1 && s.dtlsStreamUp) return `vs TV input · ⚡ ${s.spikesSuppressed || 0}/5s dropped`;
+  return "vs TV input";
+}
+
 // forwardErrDecayMs is how long the amber "N err" warning stays after the most
 // recent failed Pro write. Once writes have been succeeding for this long, the
 // card decays back to the healthy state — a long-resolved fault must not leave a
@@ -354,7 +374,7 @@ function renderDashboard(s) {
       </div>
       <div class="pipe row2">
         <div class="step"><div class="lbl">Lights</div><div class="val">${driven}</div><div class="sub">Driven by TV</div></div>
-        <div class="step"><div class="lbl">Jitter-reduction <span class="info" tabindex="0" data-tip="How much relume-tv's ${s.smoothingTauMs || 40} ms easing shrinks the biggest brightness jump on the DTLS stream to the Hue Bridge Pro vs the TV input. Higher is smoother; 0% when not streaming or nothing jumped.">i</span></div><div class="val">${jitterDisplay(s)}</div><div class="sub">vs TV input</div></div>
+        <div class="step"><div class="lbl">Jitter-reduction <span class="info" tabindex="0" data-tip="${esc(jitterTip(s))}">i</span></div><div class="val">${jitterDisplay(s)}</div><div class="sub">${jitterSub(s)}</div></div>
         <div class="step"><div class="lbl">Backpressure <span class="info" tabindex="0" data-tip="Drops/s: Ambilight frames relume-tv coalesced away because the Hue Bridge Pro could not keep up — healthy, it spares the Hue Bridge Pro writes it cannot accept. Errors: failed writes to the Hue Bridge Pro (unreachable / 503 overflow) — the real fault signal.">i</span></div><div class="val">${backpressureVal(s)}</div><div class="sub">${backpressureSub(s)}</div></div>
         <div class="step"><div class="lbl">Received</div><div class="val">${esc(receivedSub(s))}</div><div class="sub">from TV</div></div>
         <div class="step"><div class="lbl">Sent</div><div class="val">${esc(sentSub(s))}</div><div class="sub">to Hue Bridge Pro</div></div>

@@ -86,6 +86,13 @@ type Snapshot struct {
 	// card renders a longdash rather than a stale figure.
 	JitterInBri   int `json:"jitterInBri,omitempty"`
 	JitterSentBri int `json:"jitterSentBri,omitempty"`
+	// MedianWindow / MedianThreshold are the gated median spike-filter knobs (window <= 1
+	// means the filter is off). The Jitter-reduction card shows the spike figure and
+	// tooltip detail only when MedianWindow > 1. SpikesSuppressed is the latest per-window
+	// count of crass spikes the filter dropped.
+	MedianWindow     int `json:"medianWindow,omitempty"`
+	MedianThreshold  int `json:"medianThreshold,omitempty"`
+	SpikesSuppressed int `json:"spikesSuppressed,omitempty"`
 
 	// --- Setup wizard state (the frontend renders the wizard from these until the
 	// setup is complete). ---
@@ -170,6 +177,12 @@ type StateSource interface {
 	// the pair is fresh. ok is false when not streaming to the Pro over DTLS, so the UI
 	// shows a longdash instead of a stale reduction.
 	Jitter() (inBri, sentBri int, ok bool)
+	// MedianWindow / MedianThreshold are the gated median spike-filter knobs (window <= 1
+	// = off); the Jitter-reduction card shows spike info only when the filter is enabled.
+	// SpikesSuppressed is the latest per-window count of crass spikes the filter dropped.
+	MedianWindow() int
+	MedianThreshold() int
+	SpikesSuppressed() int
 
 	// --- Setup wizard state ---
 	// SetupComplete is the steady-state dashboard gate (committed && proPaired &&
@@ -205,32 +218,37 @@ func BuildSnapshot(src StateSource) Snapshot {
 	}
 
 	s := Snapshot{
-		Version:        src.Version(),
-		StartedAt:      rfc3339(src.StartedAt()),
-		ProPaired:      paired,
-		ProName:        name,
-		ProHost:        host,
-		ProBridgeID:    bridgeID,
-		CertPinned:     pinned,
-		TVClients:      tv,
-		Mode:           mode,
-		DTLSStreamUp:   dtlsUp,
-		Fallback:       fallback,
-		BridgeName:     src.BridgeName(),
-		LastActivity:   rfc3339(src.LastActivity()),
-		Lights:         []LightView{},
-		StreamFPS:      src.StreamFPS(),
-		ProSendFPS:     src.ProSendFPS(),
-		ProWriteRate:   src.ProWriteRate(),
-		RestRecvRate:   src.RestRecvRate(),
-		CoalesceRate:   src.CoalesceRate(),
-		ForwardErrors:  src.ForwardErrors(),
-		LastForwardErr: rfc3339(src.LastForwardErr()),
-		SmoothingTauMs: src.SmoothingTauMs(),
+		Version:         src.Version(),
+		StartedAt:       rfc3339(src.StartedAt()),
+		ProPaired:       paired,
+		ProName:         name,
+		ProHost:         host,
+		ProBridgeID:     bridgeID,
+		CertPinned:      pinned,
+		TVClients:       tv,
+		Mode:            mode,
+		DTLSStreamUp:    dtlsUp,
+		Fallback:        fallback,
+		BridgeName:      src.BridgeName(),
+		LastActivity:    rfc3339(src.LastActivity()),
+		Lights:          []LightView{},
+		StreamFPS:       src.StreamFPS(),
+		ProSendFPS:      src.ProSendFPS(),
+		ProWriteRate:    src.ProWriteRate(),
+		RestRecvRate:    src.RestRecvRate(),
+		CoalesceRate:    src.CoalesceRate(),
+		ForwardErrors:   src.ForwardErrors(),
+		LastForwardErr:  rfc3339(src.LastForwardErr()),
+		SmoothingTauMs:  src.SmoothingTauMs(),
+		MedianWindow:    src.MedianWindow(),
+		MedianThreshold: src.MedianThreshold(),
 	}
 	if inBri, sentBri, ok := src.Jitter(); ok {
 		s.JitterInBri = inBri
 		s.JitterSentBri = sentBri
+		// The spike count shares the sent-side freshness gate (both come from the same
+		// 5s streamer rollup), so it only appears while streaming to the Pro over DTLS.
+		s.SpikesSuppressed = src.SpikesSuppressed()
 	}
 
 	// Setup wizard state. The frontend renders the wizard from CurrentStep until

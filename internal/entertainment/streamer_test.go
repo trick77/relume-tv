@@ -922,3 +922,130 @@ func TestSetSmoothTau_changesEasingRate(t *testing.T) {
 		t.Fatalf("tau=0 should forward verbatim: got A=%d want 50000", off)
 	}
 }
+
+// TestMedianComponent covers the tiny-window median: empty is 0, a single sample is
+// itself, and an odd window returns the middle of the sorted samples.
+func TestMedianComponent(t *testing.T) {
+	if m := medianComponent(nil); m != 0 {
+		t.Fatalf("medianComponent(nil) = %d, want 0", m)
+	}
+	if m := medianComponent([]uint16{5}); m != 5 {
+		t.Fatalf("medianComponent([5]) = %d, want 5", m)
+	}
+	if m := medianComponent([]uint16{9, 1, 5}); m != 5 {
+		t.Fatalf("medianComponent([9 1 5]) = %d, want 5 (sorted middle)", m)
+	}
+}
+
+// TestGatedMedian_subThresholdPassesVerbatim proves a change smaller than the threshold
+// is passed through untouched (no mutation, no suppression) — the property that keeps
+// normal content lag-free, in contrast to the EMA easing which trails everything.
+func TestGatedMedian_subThresholdPassesVerbatim(t *testing.T) {
+	hist := []huestream.Channel{{A: 1000, B: 2000, C: 3000}, {A: 1000, B: 2000, C: 3000}}
+	newest := huestream.Channel{ID: 7, A: 1500, B: 2000, C: 3000} // +500 on A, well under threshold
+	out, suppressed := gatedMedian(append(hist, newest), newest, 8000)
+	if suppressed {
+		t.Fatal("a sub-threshold change must not be suppressed")
+	}
+	if out != newest {
+		t.Fatalf("a sub-threshold change must pass verbatim: got %+v want %+v", out, newest)
+	}
+}
+
+// TestGatedMedian_dropsCrassSpike proves a crass spike above the threshold is replaced
+// by the window median and flagged suppressed.
+func TestGatedMedian_dropsCrassSpike(t *testing.T) {
+	hist := []huestream.Channel{{A: 1000}, {A: 1000}}
+	spike := huestream.Channel{ID: 7, A: 50000}
+	out, suppressed := gatedMedian(append(hist, spike), spike, 8000)
+	if !suppressed {
+		t.Fatal("a crass spike must be suppressed")
+	}
+	if out.A != 1000 {
+		t.Fatalf("a crass spike must be replaced by the median: got A=%d want 1000", out.A)
+	}
+	if out.ID != spike.ID {
+		t.Fatalf("channel ID must be preserved: got %d want %d", out.ID, spike.ID)
+	}
+}
+
+// TestMedianFilter_dropsSpikeThroughPipeline drives the filter → easing pipeline
+// (median enabled, tau off so the sent value equals the target) and asserts a
+// single-frame spike never reaches the lamps and is counted, while a sub-threshold
+// baseline passes.
+func TestMedianFilter_dropsSpikeThroughPipeline(t *testing.T) {
+	s := &ProStreamer{}
+	s.SetMedianFilter(3, 8000)
+	s.SetSmoothTau(0) // easing off: sent == filtered target, so we observe the median directly
+	s.st.colorSpace = huestream.ColorSpaceXY
+	s.st.latest = map[uint8]huestream.Channel{}
+	const ch = uint8(7)
+	send := func(a uint16) uint16 {
+		s.st.latest[ch] = s.medianFilterLocked(ch, huestream.Channel{ID: uint16(ch), A: a})
+		return s.buildFrameLocked().Channels[0].A
+	}
+	send(1000)
+	send(1000)
+	if got := send(50000); got == 50000 { // crass 1-frame spike
+		t.Fatalf("the median must drop the spike, got A=%d", got)
+	}
+	if s.st.spikesSuppressed == 0 {
+		t.Fatal("the suppressed spike must be counted")
+	}
+	if got := send(1000); got != 1000 { // spike reverts
+		t.Fatalf("after the spike reverts, output must be the 1000 baseline, got %d", got)
+	}
+}
+
+// TestMedianFilter_passesSustainedStep proves a genuine hard cut survives the filter,
+// arriving within ~1 frame (the irreducible one-sample delay), unlike a transient.
+func TestMedianFilter_passesSustainedStep(t *testing.T) {
+	s := &ProStreamer{}
+	s.SetMedianFilter(3, 8000)
+	s.SetSmoothTau(0)
+	s.st.colorSpace = huestream.ColorSpaceXY
+	s.st.latest = map[uint8]huestream.Channel{}
+	const ch = uint8(7)
+	send := func(a uint16) uint16 {
+		s.st.latest[ch] = s.medianFilterLocked(ch, huestream.Channel{ID: uint16(ch), A: a})
+		return s.buildFrameLocked().Channels[0].A
+	}
+	send(1000)
+	send(1000)
+	send(50000)                           // frame 1 of the cut: median still 1000 → held (the ~1-frame lag)
+	if got := send(50000); got != 50000 { // frame 2: median now 50000 → passes
+		t.Fatalf("a sustained step must pass within ~1 frame, got %d", got)
+	}
+}
+
+// TestSetMedianFilter_roundsEvenWindowUp proves an even window is bumped to the next
+// odd value, so the median always has an unambiguous middle (an even window would take
+// the upper-middle sample and could propagate the very spike it should drop).
+func TestSetMedianFilter_roundsEvenWindowUp(t *testing.T) {
+	s := &ProStreamer{}
+	s.SetMedianFilter(4, 8000)
+	if s.medianWindow != 5 {
+		t.Fatalf("even window must round up: got %d, want 5", s.medianWindow)
+	}
+	s.SetMedianFilter(3, 8000)
+	if s.medianWindow != 3 {
+		t.Fatalf("odd window must be kept: got %d, want 3", s.medianWindow)
+	}
+	s.SetMedianFilter(1, 8000) // off — must stay 1, not round to 3
+	if s.medianWindow != 1 {
+		t.Fatalf("disabled window must stay 1: got %d", s.medianWindow)
+	}
+}
+
+// TestMedianFilter_disabledPassesVerbatim proves the default (window <= 1) is a no-op:
+// the raw target is returned unchanged and no history is allocated.
+func TestMedianFilter_disabledPassesVerbatim(t *testing.T) {
+	s := &ProStreamer{} // medianWindow 0 = off
+	raw := huestream.Channel{ID: 7, A: 50000, B: 0, C: 0}
+	if got := s.medianFilterLocked(7, raw); got != raw {
+		t.Fatalf("a disabled filter must pass verbatim: got %+v want %+v", got, raw)
+	}
+	if s.st.history != nil {
+		t.Fatal("a disabled filter must not allocate history")
+	}
+}
