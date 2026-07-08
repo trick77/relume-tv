@@ -77,6 +77,55 @@ func smoothToward(current, target huestream.Channel, alpha float64) huestream.Ch
 	}
 }
 
+// DefaultMedianThreshold is the default per-component "crass" magnitude (of 65535) for
+// the gated median filter — the -entertainment-median-threshold flag's default. A
+// change smaller than this passes through verbatim; only jumps above it are candidates
+// for suppression. ~12% of full scale: large enough to leave normal content untouched,
+// small enough to catch a hard flicker spike. Effective only when the median window is
+// enabled; tune against the receiver's bri_max_jump/col_max_jump stats.
+const DefaultMedianThreshold = 8000
+
+// medianComponent returns the median of up to a few 16-bit samples (the median window
+// is tiny, so a copy+sort is cheapest and clearest). An empty slice returns 0.
+func medianComponent(samples []uint16) uint16 {
+	if len(samples) == 0 {
+		return 0
+	}
+	s := append([]uint16(nil), samples...)
+	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
+	return s[len(s)/2]
+}
+
+// gatedMedian is the impulse-rejection (switching-median) filter: for each colour
+// component it takes the median of the recent history and, ONLY if the newest sample
+// deviates from that median by more than threshold, replaces it with the median;
+// otherwise the newest value passes through verbatim. This drops crass transient spikes
+// (flicker) while leaving normal/smoothly-varying content untouched and lag-free — the
+// deliberate contrast with the EMA easing, which trails all content (see DefaultSmoothTau).
+// history must already include newest (the current sample is part of its own window).
+// suppressed is true when any component was replaced, for the "spikes suppressed" stat.
+func gatedMedian(history []huestream.Channel, newest huestream.Channel, threshold uint16) (out huestream.Channel, suppressed bool) {
+	// pick eases one component: it returns the median when cur deviates from it by more
+	// than threshold (dropped=true), else cur verbatim. Returning the flag rather than
+	// mutating a closure var keeps the OR of the three components explicit and free of
+	// evaluation-order assumptions in the struct literal below.
+	pick := func(sel func(huestream.Channel) uint16, cur uint16) (uint16, bool) {
+		samples := make([]uint16, len(history))
+		for i, h := range history {
+			samples[i] = sel(h)
+		}
+		med := medianComponent(samples)
+		if d := int(cur) - int(med); d > int(threshold) || d < -int(threshold) {
+			return med, true
+		}
+		return cur, false
+	}
+	a, da := pick(func(c huestream.Channel) uint16 { return c.A }, newest.A)
+	b, db := pick(func(c huestream.Channel) uint16 { return c.B }, newest.B)
+	c, dc := pick(func(c huestream.Channel) uint16 { return c.C }, newest.C)
+	return huestream.Channel{ID: newest.ID, A: a, B: b, C: c}, da || db || dc
+}
+
 // ProClient is the subset of *bridgepro.Client the streamer needs (an interface so
 // the state machine can be unit-tested without a real Pro).
 type ProClient interface {
@@ -124,9 +173,11 @@ type ProStreamer struct {
 	OnSend func()
 
 	// OnWindowStats, if set, is called once per 5s rollup with the largest brightness
-	// and colour jump on the *sent* (smoothed) stream over that window. Paired with the
-	// receiver's input-side jumps, the web UI shows how much the easing cut the jitter.
-	OnWindowStats func(briJump, colJump uint32)
+	// and colour jump on the *sent* (smoothed) stream over that window, plus the number
+	// of spikes the gated median filter suppressed in that window (0 when the filter is
+	// off). Paired with the receiver's input-side jumps, the web UI shows how much the
+	// easing cut the jitter and how many crass spikes the median dropped.
+	OnWindowStats func(briJump, colJump, spikesSuppressed uint32)
 
 	// port overrides the Pro DTLS port (default 2100); for tests.
 	port int
@@ -145,6 +196,14 @@ type ProStreamer struct {
 	// the 50 Hz send path (buildFrameLocked) with no further writes, so it needs no lock.
 	// Zero means unset (zero-value test instances), handled by alpha().
 	smoothAlpha float64
+
+	// medianWindow / medianThreshold configure the gated median spike filter that runs
+	// on the target BEFORE the EMA easing (see gatedMedian). medianWindow <= 1 disables
+	// it (the default; frames reach st.latest verbatim, exactly as before the filter
+	// existed). Set once before Start via SetMedianFilter and read on the ~25 Hz Push
+	// path under st.mu.
+	medianWindow    int
+	medianThreshold uint16
 
 	mu      sync.Mutex
 	cancel  context.CancelFunc
@@ -177,8 +236,13 @@ type state struct {
 	remap      map[uint16]uint8            // TV v1 light id → Pro channel id
 	latest     map[uint8]huestream.Channel // Pro channel id → latest TV colour (smoothing target)
 	current    map[uint8]huestream.Channel // Pro channel id → eased colour actually streamed
-	seq        uint8
-	path       string // "dtls" | "rest"
+	// history is the recent raw-target ring per Pro channel (newest last, capped at
+	// medianWindow) for the gated median filter. Only populated when the filter is
+	// enabled. spikesSuppressed counts gate firings since the last 5s rollup.
+	history          map[uint8][]huestream.Channel
+	spikesSuppressed uint32
+	seq              uint8
+	path             string // "dtls" | "rest"
 	// cachedConfigID is the relume-tv config id resolved earlier this process, so repeat
 	// establish calls (stream re-connects, backoff retries) skip the list+match
 	// round-trips. Guarded by st.mu: cheap and still correct now that Stop joins the
@@ -223,6 +287,26 @@ func (s *ProStreamer) SetProResolver(fn func() (pro ProClient, host, appKey stri
 // resolved per-tick weight is read on the 50 Hz send path with no further writes.
 func (s *ProStreamer) SetSmoothTau(tau time.Duration) {
 	s.smoothAlpha = alphaForTau(tau)
+}
+
+// SetMedianFilter configures the gated median spike filter on the DTLS send path (see
+// gatedMedian). window <= 1 disables it (frames forwarded verbatim to the easing stage,
+// the default). window is the number of recent target frames the per-component median
+// is taken over (3 catches single-frame spikes; 5 catches two-frame ones). threshold is
+// the per-component "crass" magnitude below which a change always passes through. Call
+// before Start; read on the Push path under st.mu. Independent of and composable with
+// SetSmoothTau — run the median alone by also setting tau to 0.
+//
+// An even window is rounded up to the next odd value: with an even window the median
+// picks the upper of the two middle samples, so a normal frame right after a spike
+// would take the spike as its median and be replaced BY it — propagating the spike, the
+// opposite of the intent. Odd windows have an unambiguous middle and avoid this.
+func (s *ProStreamer) SetMedianFilter(window int, threshold uint16) {
+	if window > 1 && window%2 == 0 {
+		window++
+	}
+	s.medianWindow = window
+	s.medianThreshold = threshold
 }
 
 // alpha returns the per-tick easing weight, falling back to the default for a
@@ -351,7 +435,12 @@ func (s *ProStreamer) Push(_ string, f *huestream.Frame) {
 		s.st.colorSpace = f.ColorSpace
 		for _, ch := range f.Channels {
 			if proCh, ok := s.st.remap[ch.ID]; ok {
-				s.st.latest[proCh] = huestream.Channel{ID: uint16(proCh), A: ch.A, B: ch.B, C: ch.C}
+				raw := huestream.Channel{ID: uint16(proCh), A: ch.A, B: ch.B, C: ch.C}
+				// Gated median spike drop (pre-stage to the EMA easing). Disabled
+				// (window <= 1): the raw target reaches st.latest verbatim, exactly as
+				// before the filter existed. Enabled: crass single-frame spikes are
+				// replaced by the recent median so the easing never chases them.
+				s.st.latest[proCh] = s.medianFilterLocked(proCh, raw)
 			}
 		}
 		s.st.mu.Unlock()
@@ -386,6 +475,30 @@ func (s *ProStreamer) Push(_ string, f *huestream.Frame) {
 		}
 		s.fallback(strconv.Itoa(int(ch.ID)), ToHueV1State(f.ColorSpace, ch))
 	}
+}
+
+// medianFilterLocked applies the gated median spike filter to one channel's raw target
+// and returns the value to store as the easing target. With the filter disabled
+// (medianWindow <= 1) it returns raw unchanged and touches no state. Otherwise it
+// appends raw to the channel's history ring (capped at medianWindow), runs gatedMedian
+// over that window, and counts a suppression when the gate fires. Caller holds st.mu.
+func (s *ProStreamer) medianFilterLocked(proCh uint8, raw huestream.Channel) huestream.Channel {
+	if s.medianWindow <= 1 {
+		return raw
+	}
+	if s.st.history == nil {
+		s.st.history = make(map[uint8][]huestream.Channel)
+	}
+	h := append(s.st.history[proCh], raw)
+	if len(h) > s.medianWindow {
+		h = h[len(h)-s.medianWindow:]
+	}
+	s.st.history[proCh] = h
+	out, suppressed := gatedMedian(h, raw, s.medianThreshold)
+	if suppressed {
+		s.st.spikesSuppressed++
+	}
+	return out
 }
 
 // run establishes the DTLS path (retrying on a backoff while the TV stays
@@ -460,6 +573,8 @@ func (s *ProStreamer) establish(ctx context.Context) error {
 	s.st.remap = remap
 	s.st.latest = map[uint8]huestream.Channel{}
 	s.st.current = map[uint8]huestream.Channel{}
+	s.st.history = map[uint8][]huestream.Channel{}
+	s.st.spikesSuppressed = 0
 	s.st.path = "dtls"
 	s.st.mu.Unlock()
 	return nil
@@ -487,14 +602,16 @@ func (s *ProStreamer) sendLoop(ctx context.Context) {
 			s.st.mu.Lock()
 			ch := len(s.st.latest)
 			seq := s.st.seq
+			spikes := s.st.spikesSuppressed
+			s.st.spikesSuppressed = 0
 			s.st.mu.Unlock()
 			if sent != prev {
 				s.log.Debug("hue bridge pro entertainment stream", "frames_5s", sent-prev, "channels", ch, "seq", seq,
-					"bri_max_jump", briJump, "col_max_jump", colJump)
+					"bri_max_jump", briJump, "col_max_jump", colJump, "spikes_dropped", spikes)
 				prev = sent
 			}
 			if s.OnWindowStats != nil {
-				s.OnWindowStats(briJump, colJump)
+				s.OnWindowStats(briJump, colJump, spikes)
 			}
 			briJump, colJump = 0, 0
 		case <-t.C:

@@ -45,6 +45,9 @@ func (f fakeSource) ForwardErrors() int               { return f.fwdErrs }
 func (f fakeSource) LastForwardErr() time.Time        { return f.lastErr }
 func (f fakeSource) SmoothingTauMs() int              { return 40 }
 func (f fakeSource) Jitter() (int, int, bool)         { return 8000, 1600, true }
+func (f fakeSource) MedianWindow() int                { return 3 }
+func (f fakeSource) MedianThreshold() int             { return 8000 }
+func (f fakeSource) SpikesSuppressed() int            { return 5 }
 func (f fakeSource) SetupComplete() bool              { return true }
 func (f fakeSource) CurrentStep() int                 { return stepDoneSnap }
 func (f fakeSource) FirstRun() bool                   { return false }
@@ -117,7 +120,7 @@ func TestBuildSnapshot_LiveColorOverridesButDoesNotDrive(t *testing.T) {
 // swatch goes dark instead of staying lit on the stale colour.
 func TestBuildSnapshot_OffStateWinsWhenNotDriven(t *testing.T) {
 	src := fakeSource{
-		driven: nil, // no longer driven
+		driven: nil,  // no longer driven
 		proOff: true, // Pro REST reports on:false (idle-off turned it off)
 		live:   map[string]LiveColor{"1": {X: 0.1, Y: 0.2, Bri: 99, On: true}},
 	}
@@ -179,6 +182,25 @@ func TestBuildSnapshot_BackpressureFieldsFlowThrough(t *testing.T) {
 	}
 }
 
+// The gated median filter's knobs and per-window spike count flow through to the
+// snapshot JSON, so the Jitter-reduction card can show the "N spikes dropped" figure.
+func TestBuildSnapshot_MedianFieldsFlowThrough(t *testing.T) {
+	s := BuildSnapshot(fakeSource{driven: []string{"1"}}) // fake: window 3, threshold 8000, spikes 5
+	if s.MedianWindow != 3 || s.MedianThreshold != 8000 || s.SpikesSuppressed != 5 {
+		t.Fatalf("median fields = window %d threshold %d spikes %d, want 3/8000/5",
+			s.MedianWindow, s.MedianThreshold, s.SpikesSuppressed)
+	}
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"medianWindow":3`, `"spikesSuppressed":5`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("expected %s in JSON, got %s", want, b)
+		}
+	}
+}
+
 // With no forward errors the timestamp stays empty (omitempty drops it), so the UI
 // never shows a decaying warning for a fault that never happened.
 func TestBuildSnapshot_NoForwardErrLeavesTimestampEmpty(t *testing.T) {
@@ -213,6 +235,9 @@ func (emptySource) ForwardErrors() int               { return 0 }
 func (emptySource) LastForwardErr() time.Time        { return time.Time{} }
 func (emptySource) SmoothingTauMs() int              { return 40 }
 func (emptySource) Jitter() (int, int, bool)         { return 0, 0, false }
+func (emptySource) MedianWindow() int                { return 1 }
+func (emptySource) MedianThreshold() int             { return 8000 }
+func (emptySource) SpikesSuppressed() int            { return 0 }
 func (emptySource) SetupComplete() bool              { return false }
 func (emptySource) CurrentStep() int                 { return 1 }
 func (emptySource) FirstRun() bool                   { return true }

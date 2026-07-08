@@ -77,6 +77,8 @@ type serveOptions struct {
 	dtlsFallbackTimeout    time.Duration
 	dtlsFallbackRecovery   time.Duration
 	smoothTau              time.Duration
+	medianWindow           int
+	medianThreshold        int
 	headless               bool
 	uiPort                 int
 }
@@ -126,6 +128,8 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	dtlsFallbackTimeout := fs.Duration("entertainment-dtls-timeout", 5*time.Second, "entertainment mode: how long to wait after confirming the TV's stream activation for the TV to open its DTLS stream on :2100 before reverting to REST-follow")
 	dtlsFallbackRecovery := fs.Duration("entertainment-fallback-recovery", 90*time.Second, "entertainment mode: how long a latched REST fallback persists before the next TV activation may recover it (0 disables: fallback stays sticky until restart)")
 	smoothTau := fs.Duration("entertainment-smooth-tau", entertainment.DefaultSmoothTau, "entertainment mode: exponential-smoothing time constant for easing the TV's hard scene cuts on the DTLS send path. Lower = snappier but more flicker, higher = smoother but laggier; 0 disables smoothing (frames forwarded verbatim)")
+	medianWindow := fs.Int("entertainment-median-window", 1, "entertainment mode: gated median spike filter — number of recent TV frames the per-channel median is taken over on the DTLS send path. Drops crass single-frame flicker spikes without the trailing latency of smoothing, and passes normal content verbatim. 1 disables it (default); 3 catches single-frame spikes, 5 catches two-frame ones (odd values only — an even window is rounded up). Composable with -entertainment-smooth-tau")
+	medianThreshold := fs.Int("entertainment-median-threshold", entertainment.DefaultMedianThreshold, "entertainment mode: per-component 'crass' magnitude (of 65535) above which the median filter may suppress a change; smaller changes pass verbatim. Only active when -entertainment-median-window > 1. Tune against the bri_max_jump/col_max_jump debug stats")
 	headless := fs.Bool("headless", false, "disable the web UI (it runs on the predefined port 33100 by default). NOTE: with network_mode: host the UI is otherwise reachable, unauthenticated, by anyone on the LAN")
 	uiPort := fs.Int("ui-port", 0, "override the web UI port (0 = the predefined port 33100). Must differ from -http-port (80). Ignored when -headless is set")
 	if err := fs.Parse(args); err != nil {
@@ -148,6 +152,8 @@ func parseServeOptions(args []string) (serveOptions, error) {
 		dtlsFallbackTimeout:    *dtlsFallbackTimeout,
 		dtlsFallbackRecovery:   *dtlsFallbackRecovery,
 		smoothTau:              *smoothTau,
+		medianWindow:           *medianWindow,
+		medianThreshold:        *medianThreshold,
 		headless:               *headless,
 		uiPort:                 *uiPort,
 	}, nil
@@ -394,6 +400,11 @@ func runServe(args []string, log *slog.Logger) error {
 			// tooltip reflects -entertainment-smooth-tau, not just the default. A
 			// negative flag value clamps to 0 (smoothing off), matching the streamer.
 			smoothTauMs: int(max(0, opts.smoothTau) / time.Millisecond),
+			// The configured gated median filter knobs, so the Jitter-reduction card can
+			// show the spike count and window/threshold only when the filter is enabled
+			// (window <= 1 = off, hidden). Mirrors smoothTauMs.
+			medianWindow:    opts.medianWindow,
+			medianThreshold: opts.medianThreshold,
 		}
 		// Push a fresh snapshot promptly whenever the setup machine changes, so the
 		// wizard tracks transitions without waiting for the ~1s snapshot tick (and so a
@@ -459,6 +470,10 @@ func runServe(args []string, log *slog.Logger) error {
 		})
 		// Easing time constant for the DTLS send path (configurable; 0 = off).
 		streamer.SetSmoothTau(opts.smoothTau)
+		// Gated median spike filter on the DTLS send path (window 1 = off). Drops crass
+		// flicker spikes without the trailing latency of the easing; composable with tau.
+		// Threshold clamps to the 16-bit component range.
+		streamer.SetMedianFilter(opts.medianWindow, uint16(max(0, min(65535, opts.medianThreshold))))
 		// Surface the live DTLS-passthrough colours to the web UI (the REST path is
 		// covered by the provider's OnColor via the fallback sink).
 		streamer.OnColor = liveColors.SetStates
@@ -467,7 +482,10 @@ func runServe(args []string, log *slog.Logger) error {
 		streamer.OnSend = proSendStats.Mark
 		// Record the smoothed sent stream's per-window brightness jump; the gap
 		// below the receiver's input jump is how much the easing cut the flicker.
-		streamer.OnWindowStats = func(briJump, _ uint32) { jitterStats.setSent(briJump) }
+		streamer.OnWindowStats = func(briJump, _, spikes uint32) {
+			jitterStats.setSent(briJump)
+			jitterStats.setSpikes(spikes)
+		}
 		// Honor the TV's group membership: when the TV declares which lights belong to
 		// its Ambilight zone (POST/PUT /groups), restrict the Pro config to that
 		// subset so lights in other rooms are never driven. Also filters the REST fallback.
