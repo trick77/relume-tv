@@ -3,6 +3,25 @@ name: Release
 on:
   push:
     branches: [master]
+    # Only cut a release when something that ships actually changed. Without this,
+    # a licence file, a .gitignore line or a comment fix each cut a full version,
+    # multi-arch image build, GHCR push, git tag and GitHub release.
+    #
+    # This is an ignore-list rather than an allow-list on purpose: a new top-level
+    # directory starts out releasing, which is the safe default. Forgetting to add
+    # a path here costs a redundant release; forgetting to remove one would
+    # silently skip a needed release.
+    #
+    # workflow_dispatch below is unfiltered, so a release can always be forced by
+    # hand — including after a change to this workflow, which .github/** ignores.
+    paths-ignore:
+      - "docs/**"
+      - "hack/**"
+      - ".github/**"
+      - "**/*.md"
+      - "LICENSE"
+      - ".gitignore"
+      - "compose*.yaml"
   workflow_dispatch:
     inputs:
       bump:
@@ -51,13 +70,6 @@ jobs:
           echo "image=$IMAGE"  >> "$GITHUB_OUTPUT"
           echo "Bumping $LATEST -> $NEXT ($BUMP) at $SHORT" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Create and push tag
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag "${{ steps.ver.outputs.version }}"
-          git push origin "${{ steps.ver.outputs.version }}"
-
       - uses: docker/setup-qemu-action@v4
 
       - uses: docker/setup-buildx-action@v4
@@ -84,3 +96,29 @@ jobs:
             ${{ steps.ver.outputs.image }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # The tag is created only AFTER the image push succeeded. It used to be
+      # created before the build, so a failed build left an orphan tag behind —
+      # and because the next run derives its version from the newest existing
+      # tag, that version number was burned permanently.
+      #
+      # Both `git tag` + `git push` and the REST create-ref below work. create-ref
+      # is used because it needs no git credentials configured in the checkout and
+      # is a single atomic call, and because every repo in this family uses it, so
+      # the release workflows stay directly comparable.
+      - name: Create tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/${{ github.repository }}/git/refs" \
+            -f ref="refs/tags/${{ steps.ver.outputs.version }}" \
+            -f sha="${{ github.sha }}"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --notes "Container image: \`ghcr.io/${{ github.repository }}:$VERSION\`"
