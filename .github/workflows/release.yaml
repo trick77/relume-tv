@@ -12,9 +12,6 @@ on:
     # a path here costs a redundant release; forgetting to remove one would
     # silently skip a needed release.
     #
-    # dist/ is deliberately NOT ignored — it holds shipped web assets that the
-    # image serves, so a change there does warrant a release.
-    #
     # workflow_dispatch below is unfiltered, so a release can always be forced by
     # hand — including after a change to this workflow, which .github/** ignores.
     paths-ignore:
