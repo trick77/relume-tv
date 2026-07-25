@@ -103,6 +103,29 @@ assert_matched() {
     fi
   done <<<"$changed"
 
+  # Nothing changed is in the report. That is the broken-mapping symptom, but
+  # it is ALSO what a whole-module type-only change looks like: a .ts file
+  # holding only `export type` emits no runtime code, so it is absent from the
+  # report entirely rather than present with zero hits. The loop above cannot
+  # tell them apart, and only got away with it while such a file happened to be
+  # accompanied by an instrumented one — any one match short-circuits it.
+  #
+  # So prove the mapping independently of the diff: if the report's OWN paths
+  # resolve to files that exist here, the mapping is fine and this diff simply
+  # touched nothing instrumented. A genuinely broken mapping still fails,
+  # because then none of its paths would resolve.
+  local reported
+  reported="$(sed -nE 's/^SF:(.*)$/\1/p; s/.*filename="([^"]*)".*/\1/p' "$coverage" | head -100)"
+  while IFS= read -r file; do
+    [[ -n "$file" ]] || continue
+    if [[ -e "${strip}${file}" ]]; then
+      echo "patch-coverage: $label diff touched no instrumented lines; n/a."
+      echo "  (report paths resolve, so the mapping is sound — the change is" \
+        "type-only or otherwise not executable.)"
+      return 0
+    fi
+  done <<<"$reported"
+
   echo "patch-coverage: FAIL — $label sources changed but are absent from the" >&2
   echo "  coverage report. This usually means the report's paths do not" >&2
   echo "  match git's paths." >&2
@@ -145,12 +168,30 @@ if [[ -f coverage/backend.xml ]]; then
   sed "s|<source>.*</source>|<source>${MODULE_DIR}</source>|" \
     coverage/backend.xml > coverage/backend-rooted.xml
 
-  diff-cover coverage/backend-rooted.xml \
+  # Comments are not code, and must never be counted.
+  #
+  # Go's coverprofile records BLOCKS — "lines A..B hold N statements" — and
+  # never says WHICH lines in the block are statements. gocover-cobertura
+  # expands each block into one <line> per line of that range, so every comment
+  # and blank line inside a function body reaches the report as hits="0".
+  # diff-cover then holds them against the diff, and a well-explained change
+  # fails the gate on its prose — with no test anyone could write that would
+  # turn those lines green. The only way to raise that number is to delete the
+  # explanation, which inverts what the gate is for.
+  #
+  # strip-comment-lines.go drops a <line> only where go/scanner proves the line
+  # carries no non-comment token, so a trailing `// why` and a string holding
+  # "http://x" both stay counted. It is deliberately conservative: a file it
+  # cannot read or parse keeps every line it had.
+  go run hack/strip-comment-lines.go "$MODULE_DIR" \
+    < coverage/backend-rooted.xml > coverage/backend-code-only.xml
+
+  diff-cover coverage/backend-code-only.xml \
     --compare-branch "$BASE_REF" \
     --fail-under "$PATCH_MIN" \
     --format "markdown:coverage/backend-patch.md" || fail=1
   cat coverage/backend-patch.md >> "$summary" 2>/dev/null || true
-  assert_matched coverage/backend-patch.md backend coverage/backend-rooted.xml \
+  assert_matched coverage/backend-patch.md backend coverage/backend-code-only.xml \
     "$MODULE_PREFIX" "$MODULE_GLOB"
 fi
 
