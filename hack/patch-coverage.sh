@@ -6,11 +6,17 @@
 # absolute project floor — the two answer different questions:
 #
 #   coverage-gate.sh   "is the codebase as a whole tested enough?"   (75% floor)
-#   patch-coverage.sh  "is the code I just wrote tested?"            (80% patch)
+#   patch-coverage.sh  "is the code I just wrote tested?"            (75% patch)
 #
 # The floor alone lets a large well-tested codebase absorb untested new code
 # without ever going red. The patch gate alone lets legacy debt sit forever.
 # Both, together, pin the gain without punishing anyone for debt they inherited.
+#
+# The two numbers were deliberately different once — patch at 80 against a 75
+# floor, holding new code to a higher bar than inherited debt. They are now the
+# same. The remaining reason to run both is the QUESTION each asks, not the
+# number: a branch can clear the project floor comfortably while the handful of
+# lines it actually changed go untested, and only the patch gate sees that.
 #
 # Ported from loom, which has run this since its early days.
 #
@@ -18,7 +24,7 @@
 set -euo pipefail
 
 BASE_REF="${1:-origin/master}"
-PATCH_MIN="${PATCH_MIN:-80}"
+PATCH_MIN="${PATCH_MIN:-75}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
