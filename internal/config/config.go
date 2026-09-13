@@ -231,6 +231,19 @@ func (c *Config) PairedDeviceTypes() []string {
 	return out
 }
 
+// ApiUsersSnapshot returns the paired clients (username + devicetype, no clientkey),
+// sorted by username — for the whitelist in the authenticated /config.
+func (c *Config) ApiUsersSnapshot() []ApiUser {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]ApiUser, 0, len(c.ApiUsers))
+	for _, u := range c.ApiUsers {
+		out = append(out, ApiUser{Username: u.Username, DeviceType: u.DeviceType})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Username < out[j].Username })
+	return out
+}
+
 // PSKForUser returns the DTLS pre-shared key (the hex-decoded clientkey) for a
 // paired client identity (username), for the entertainment DTLS handshake.
 func (c *Config) PSKForUser(username string) ([]byte, bool) {
