@@ -114,20 +114,26 @@ func NewLightProvider(client *bridgepro.Client, log *slog.Logger) *LightProvider
 // The Hue Bridge Pro round-trip (up to the client's 10 s timeout) never runs under
 // p.mu: the TV polls GET /lights/{id} at a few Hz and a slow or unreachable Pro must
 // not stall those polls behind a lock — nor the id lookups the DTLS path needs.
-// Concurrent callers past the TTL share one fetch. When a refresh fails but an
-// earlier one succeeded, the last known list is served (the TV keeps a consistent
-// light set while the Pro is briefly away); an error surfaces only when there has
-// never been a successful fetch.
+// Once a list has been fetched it is always served immediately: past the TTL the
+// refresh runs in the background (one at a time), and a failed refresh keeps the
+// last known list (the TV keeps a consistent light set while the Pro is briefly
+// away) and waits a TTL before retrying. Only the very first fetch blocks, and
+// concurrent first callers share it; an error surfaces only when there has never
+// been a successful fetch.
 func (p *LightProvider) LightsV1() (map[string]any, error) {
 	p.mu.Lock()
-	if p.cached != nil && time.Since(p.fetchedAt) < lightCacheTTL {
+	if p.cached != nil {
 		cached := p.cached
+		if time.Since(p.fetchedAt) >= lightCacheTTL && p.refresh == nil {
+			p.refresh = make(chan struct{})
+			go p.fetch()
+		}
 		p.mu.Unlock()
 		return cached, nil
 	}
 	if p.refresh != nil {
-		// A refresh is in flight: wait for it rather than piling a second Pro request
-		// on top, then serve whatever it produced.
+		// The first fetch is in flight: wait for it rather than piling a second Pro
+		// request on top, then serve whatever it produced.
 		done := p.refresh
 		p.mu.Unlock()
 		<-done
@@ -138,26 +144,48 @@ func (p *LightProvider) LightsV1() (map[string]any, error) {
 		}
 		return nil, p.lastErr
 	}
-	done := make(chan struct{})
-	p.refresh = done
+	p.refresh = make(chan struct{})
 	p.mu.Unlock()
+	p.fetch()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.cached != nil {
+		return p.cached, nil
+	}
+	return nil, p.lastErr
+}
 
+// CachedLightsV1 returns the last fetched list without touching the Pro (ok=false
+// before the first successful fetch). For responses that must never wait on the
+// Pro round-trip, like the TV's group reads.
+func (p *LightProvider) CachedLightsV1() (map[string]any, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cached, p.cached != nil
+}
+
+// fetch performs one Pro round-trip outside p.mu and publishes the result. The
+// caller has set p.refresh; fetch clears and closes it when done.
+func (p *LightProvider) fetch() {
 	lights, err := p.client.Lights()
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	done := p.refresh
 	p.refresh = nil
 	p.lastErr = err
-	close(done)
+	defer close(done)
 	if err != nil {
 		if p.cached != nil {
+			// Keep serving the stale list; stamp fetchedAt so the next retry waits a TTL
+			// instead of firing on the very next poll.
+			p.fetchedAt = time.Now()
 			if p.log != nil && time.Since(p.lastStaleLog) >= errLogInterval {
 				p.lastStaleLog = time.Now()
 				p.log.Warn("reading lights from hue bridge pro failed, serving the last known list", "err", err)
 			}
-			return p.cached, nil
 		}
-		return nil, err
+		return
 	}
 	lm := translate.LightsV1(lights)
 	p.cached = lm.V1
@@ -167,7 +195,6 @@ func (p *LightProvider) LightsV1() (map[string]any, error) {
 		p.uuidToV1[uuid] = v1
 	}
 	p.fetchedAt = time.Now()
-	return p.cached, nil
 }
 
 // UUIDForV1 returns the v2 UUID for a numeric v1 light ID.

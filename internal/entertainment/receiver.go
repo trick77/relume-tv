@@ -142,11 +142,6 @@ func (r *Receiver) handle(ctx context.Context, conn net.Conn) {
 	replaced := r.cur
 	r.cur = mine
 	r.sessMu.Unlock()
-	if replaced != nil {
-		r.log.Info("entertainment: new TV stream replaces the previous session", "from", remote, "previous", replaced.conn.RemoteAddr().String())
-		_ = replaced.conn.Close()
-		<-replaced.done
-	}
 	defer func() {
 		// Registered before OnStreamStop's defer, so it runs after it (LIFO).
 		r.sessMu.Lock()
@@ -156,6 +151,19 @@ func (r *Receiver) handle(ctx context.Context, conn net.Conn) {
 		r.sessMu.Unlock()
 		close(mine.done)
 	}()
+	if replaced != nil {
+		r.log.Info("entertainment: new TV stream replaces the previous session", "from", remote, "previous", replaced.conn.RemoteAddr().String())
+		_ = replaced.conn.Close()
+		<-replaced.done
+		// A third session may have replaced this one while it waited; then this
+		// conn is already closed and must not fire a spurious Start/Stop pair.
+		r.sessMu.Lock()
+		superseded := r.cur != mine
+		r.sessMu.Unlock()
+		if superseded {
+			return
+		}
+	}
 
 	r.log.Info("entertainment stream connected", "from", remote)
 	if r.OnStreamStart != nil {

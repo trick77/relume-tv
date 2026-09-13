@@ -925,16 +925,19 @@ func hostname() string {
 	return h
 }
 
-// newTVServer builds the TV-facing HTTP server. Header and idle timeouts bound how
-// long a stalled or abandoned TV connection can hold a goroutine; there is
-// deliberately NO WriteTimeout: a response may legitimately wait on the Hue Bridge
-// Pro round-trip (up to its 10 s client timeout), and a write deadline shorter than
-// that would truncate the body mid-response — worse for the TV than a slow answer.
+// newTVServer builds the TV-facing HTTP server. Read (headers and body) and idle
+// timeouts bound how long a stalled or abandoned TV connection can hold a
+// goroutine, e.g. a PUT whose body never arrives after the TV dropped off the
+// network. There is deliberately NO WriteTimeout: a response may legitimately wait
+// on the Hue Bridge Pro round-trip (up to its 10 s client timeout), and a write
+// deadline shorter than that would truncate the body mid-response — worse for the
+// TV than a slow answer.
 func newTVServer(port int, h http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              fmt.Sprintf(":%d", port),
 		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 }

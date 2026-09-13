@@ -388,9 +388,48 @@ func TestLightsV1_servesLastKnownListWhenRefreshFails(t *testing.T) {
 	if _, ok := got["1"]; !ok {
 		t.Errorf("got %v; want the cached light 1", got)
 	}
-	if c.n() != 2 {
-		t.Errorf("Pro Lights() calls = %d; want 2 (a refresh was attempted)", c.n())
+	// A background refresh was attempted, and its failure pushes the next retry a
+	// TTL out instead of firing on the very next poll.
+	waitFor(t, func() bool { return c.n() == 2 })
+	waitFor(t, func() bool { p.mu.Lock(); defer p.mu.Unlock(); return p.refresh == nil })
+	if _, err := p.LightsV1(); err != nil {
+		t.Fatalf("LightsV1 after failed refresh: %v", err)
 	}
+	if c.n() != 2 {
+		t.Errorf("Pro Lights() calls = %d; want still 2 (no retry within the TTL)", c.n())
+	}
+	if _, ok := p.CachedLightsV1(); !ok {
+		t.Error("CachedLightsV1 should report the last known list")
+	}
+}
+
+func TestLightsV1_staleCacheIsServedWithoutWaitingOnTheRefresh(t *testing.T) {
+	// Given: a fetched list, an expired TTL, and a Pro that now hangs
+	c := &lightsClient{lights: []bridgepro.Light{colorLight("uuid-1")}}
+	p := newTestProvider(c)
+	if _, err := p.LightsV1(); err != nil {
+		t.Fatalf("first LightsV1: %v", err)
+	}
+	gate := make(chan struct{})
+	c.mu.Lock()
+	c.gate = gate
+	c.mu.Unlock()
+	p.mu.Lock()
+	p.fetchedAt = time.Time{}
+	p.mu.Unlock()
+
+	// When: a TV poll arrives past the TTL
+	done := make(chan struct{})
+	go func() { defer close(done); _, _ = p.LightsV1() }()
+
+	// Then: it returns at once (the refresh runs in the background)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("LightsV1 waited on the Pro although a cached list existed")
+	}
+	waitFor(t, func() bool { return c.n() == 2 })
+	close(gate)
 }
 
 func TestLightsV1_errorsWhenNeverFetched(t *testing.T) {

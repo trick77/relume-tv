@@ -138,10 +138,11 @@ type Config struct {
 // Commit() is called at the end of a successful setup. This makes the file's
 // existence mean "setup complete" — a restart mid-setup finds no file and reruns
 // the wizard. The identity is derived from the host's primary MAC, so it is the
-// SAME on every such restart (and on every restart of a container without a
-// volume): the bridge the TV already knows keeps its bridgeid/UUID; only the TV
-// credentials are lost, so the TV re-pairs against a bridge that did not change
-// identity under it. A random serial is used only when no MAC can be found.
+// same on every such restart (and on every restart of a container without a
+// volume) as long as the same interface is up at start: the bridge the TV already
+// knows keeps its bridgeid/UUID; only the TV credentials are lost, so the TV
+// re-pairs against a bridge that did not change identity under it. A random
+// serial is used only when no MAC can be found.
 func Load(path string) (*Config, error) {
 	c := &Config{path: path, ApiUsers: map[string]*ApiUser{}}
 

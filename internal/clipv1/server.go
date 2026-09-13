@@ -841,17 +841,35 @@ func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 // groupsV1 is the v1 groups map: group 0 (every light) and the TV's entertainment
 // group 1. Shared by GET /groups and the full datastore so both agree.
 func (s *Server) groupsV1() map[string]any {
-	lights := s.lightsV1()
+	lights := s.cachedLightsV1()
 	return map[string]any{
 		"0": s.bridgeGroup("0", lights),
 		"1": s.bridgeGroup("1", lights),
 	}
 }
 
+// cachedLightsV1 returns the lights without ever waiting on the Pro: the provider's
+// last fetched list when it offers one, else the regular (possibly fetching)
+// path. Group reads never touched the Pro before and must not start to.
+func (s *Server) cachedLightsV1() map[string]any {
+	lp := s.lightProvider()
+	if lp == nil {
+		return map[string]any{}
+	}
+	if c, ok := lp.(interface{ CachedLightsV1() (map[string]any, bool) }); ok {
+		if lights, ok := c.CachedLightsV1(); ok {
+			return lights
+		}
+		return map[string]any{}
+	}
+	return s.lightsV1()
+}
+
 // bridgeGroup renders one v1 group in the shape a real bridge returns. Group 0
 // lists every light; group 1 lists the subset the TV declared for its Ambilight
-// zone (everything until it declares one). A client that re-reads its group and
-// finds `lights: []` may loop re-creating it, so the membership is echoed back.
+// zone (everything until it declares one). The membership is echoed back rather
+// than a constant empty array, so a client re-reading its group sees what it
+// created (while the light list is still unknown it is empty either way).
 func (s *Server) bridgeGroup(id string, lights map[string]any) map[string]any {
 	groupType := "Entertainment"
 	name := "relume-tv Entertainment"
@@ -965,7 +983,7 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 3, "/groups/"+id, "resource, /groups/"+id+", not available")
 		return
 	}
-	writeJSON(w, s.bridgeGroup(id, s.lightsV1()))
+	writeJSON(w, s.bridgeGroup(id, s.cachedLightsV1()))
 }
 
 func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {

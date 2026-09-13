@@ -734,8 +734,8 @@ func TestNewTVServer_boundsStalledConnectionsButNeverTruncatesResponses(t *testi
 	if srv.Addr != ":80" {
 		t.Errorf("Addr = %q", srv.Addr)
 	}
-	if srv.ReadHeaderTimeout <= 0 || srv.IdleTimeout <= 0 {
-		t.Errorf("ReadHeaderTimeout=%s IdleTimeout=%s; want both > 0", srv.ReadHeaderTimeout, srv.IdleTimeout)
+	if srv.ReadHeaderTimeout <= 0 || srv.ReadTimeout <= 0 || srv.IdleTimeout <= 0 {
+		t.Errorf("ReadHeaderTimeout=%s ReadTimeout=%s IdleTimeout=%s; want all > 0", srv.ReadHeaderTimeout, srv.ReadTimeout, srv.IdleTimeout)
 	}
 	if srv.WriteTimeout != 0 {
 		t.Errorf("WriteTimeout = %s; want 0 (a deadline would truncate a Pro-bound response)", srv.WriteTimeout)

@@ -183,7 +183,7 @@ func (r *Responder) searchResponses(st string) []string {
 	variants := r.ssdpVariants()
 	out := make([]string, 0, len(variants))
 	for _, v := range variants {
-		if st != "ssdp:all" && !strings.EqualFold(st, v.st) {
+		if !strings.EqualFold(st, "ssdp:all") && !strings.EqualFold(st, v.st) {
 			continue
 		}
 		out = append(out, "HTTP/1.1 200 OK\r\n"+
