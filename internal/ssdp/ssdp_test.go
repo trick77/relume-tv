@@ -64,7 +64,7 @@ func TestSearchResponses_useDefaultServerHeaderAndBaseVariants(t *testing.T) {
 	r := testResponder()
 
 	// When
-	msgs := r.searchResponses()
+	msgs := r.searchResponses("ssdp:all")
 
 	// Then: exactly the 3 base variants, default server header, plain location
 	if len(msgs) != 3 {
@@ -90,6 +90,32 @@ func TestSearchResponses_useDefaultServerHeaderAndBaseVariants(t *testing.T) {
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("search responses missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+func TestSearchResponses_answerOnlyOwnSearchTargets(t *testing.T) {
+	r := testResponder()
+	cases := []struct {
+		st   string
+		want int
+	}{
+		{"ssdp:all", 3},
+		{"upnp:rootdevice", 1},
+		{"uuid:2f402f80-da50-11e1-9b23-2c4d54ea2832", 1},
+		{"urn:schemas-upnp-org:device:basic:1", 1},
+		{"urn:schemas-upnp-org:device:MediaServer:1", 0}, // the TV's own DLNA search
+		{"urn:dial-multiscreen-org:service:dial:1", 0},
+		{"uuid:some-other-device", 0},
+		{"", 0},
+	}
+	for _, c := range cases {
+		msgs := r.searchResponses(c.st)
+		if len(msgs) != c.want {
+			t.Errorf("ST %q: %d responses, want %d", c.st, len(msgs), c.want)
+		}
+		if c.want == 1 && !strings.Contains(msgs[0], "ST: "+c.st+"\r\n") {
+			t.Errorf("ST %q: response carries a different ST:\n%s", c.st, msgs[0])
 		}
 	}
 }

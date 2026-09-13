@@ -1,5 +1,12 @@
 package clipv1
 
+// InFallback reports whether entertainment mode is currently latched on the REST
+// fallback (the TV never opened its DTLS stream after activation). Read-only; the
+// idle-off monitor uses it to apply the REST timeout on that path.
+func (s *Server) InFallback() bool {
+	return s.EntertainmentMode && s.stream.inFallback()
+}
+
 // UIStatus reports the current control state for the web UI (read-only).
 func (s *Server) UIStatus() (mode string, dtlsUp, fallback bool) {
 	fb := s.stream.inFallback()

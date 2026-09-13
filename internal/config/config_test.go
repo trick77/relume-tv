@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -52,23 +53,82 @@ func TestLoad_GeneratesIdentityStableAcrossReloadAfterCommit(t *testing.T) {
 	}
 }
 
-func TestLoad_FreshSerialWhenRestartedBeforeCommit(t *testing.T) {
-	// Given: a fresh load that is NOT committed (restart mid-setup)
+// pinHostMAC replaces the primary-MAC lookup for the test and restores it after.
+func pinHostMAC(t *testing.T, f func() (net.HardwareAddr, bool)) {
+	t.Helper()
+	prev := hostMAC
+	hostMAC = f
+	t.Cleanup(func() { hostMAC = prev })
+}
+
+func TestLoad_SerialStableWithoutFile(t *testing.T) {
+	// Given: a host MAC and no config file (restart mid-setup, or a container
+	// without a volume)
+	pinHostMAC(t, func() (net.HardwareAddr, bool) {
+		return net.HardwareAddr{0x2c, 0x4d, 0x54, 0xea, 0x28, 0x32}, true
+	})
 	path := filepath.Join(t.TempDir(), "relume-tv.json")
+
+	// When: loading twice without a commit
 	c1, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-
-	// When: loading again without a commit (no file was written)
 	c2, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load 2: %v", err)
 	}
 
-	// Then: a brand-new identity is generated — the setup restarts from scratch.
-	if c1.Identity.Serial == c2.Identity.Serial {
-		t.Errorf("serial unexpectedly stable without commit: %q", c1.Identity.Serial)
+	// Then: both carry the MAC-derived identity — the TV sees the same bridge.
+	if c1.Identity.Serial != "2c4d54ea2832" || c2.Identity.Serial != c1.Identity.Serial {
+		t.Errorf("serials = %q, %q; want both 2c4d54ea2832", c1.Identity.Serial, c2.Identity.Serial)
+	}
+	if !c1.FirstRun() || c1.Committed() {
+		t.Errorf("fresh load: FirstRun=%v Committed=%v; want true,false", c1.FirstRun(), c1.Committed())
+	}
+}
+
+func TestLoad_StoredSerialWinsOverHostMAC(t *testing.T) {
+	// Given: a committed config with a random serial from before MAC derivation
+	pinHostMAC(t, func() (net.HardwareAddr, bool) {
+		return net.HardwareAddr{0x2c, 0x4d, 0x54, 0xea, 0x28, 0x32}, true
+	})
+	path := filepath.Join(t.TempDir(), "relume-tv.json")
+	stored := `{"schemaVersion":1,"identity":{"serial":"0123456789ab"},"apiUsers":{}}`
+	if err := os.WriteFile(path, []byte(stored), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// When
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Then: the persisted identity is kept — an upgrade never forces a re-pair.
+	if c.Identity.Serial != "0123456789ab" {
+		t.Errorf("serial = %q; want stored 0123456789ab", c.Identity.Serial)
+	}
+}
+
+func TestLoad_RandomSerialWhenNoHostMAC(t *testing.T) {
+	// Given: no usable interface
+	pinHostMAC(t, func() (net.HardwareAddr, bool) { return nil, false })
+	path := filepath.Join(t.TempDir(), "relume-tv.json")
+
+	// When
+	c1, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	c2, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load 2: %v", err)
+	}
+
+	// Then: a random 12-hex serial per load (the pre-existing behaviour)
+	if len(c1.Identity.Serial) != 12 || c1.Identity.Serial == c2.Identity.Serial {
+		t.Errorf("serials = %q, %q; want two distinct 12-hex serials", c1.Identity.Serial, c2.Identity.Serial)
 	}
 }
 

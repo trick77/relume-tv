@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/trick77/relume-tv/internal/netutil"
 )
 
 // Identity is the stable identity with which relume-tv presents itself to the TV
@@ -132,10 +134,15 @@ type Config struct {
 
 // Load reads the config from path. If the file exists, the config is loaded and
 // persistence is enabled (runtime updates write through). If it does NOT exist, a
-// new config with a freshly generated identity is built IN MEMORY and NOT written:
-// persistence stays off until Commit() is called at the end of a successful setup.
-// This makes the file's existence mean "setup complete" — a restart mid-setup finds
-// no file and reruns the wizard with a fresh identity (the TV must then re-pair).
+// new config is built IN MEMORY and NOT written: persistence stays off until
+// Commit() is called at the end of a successful setup. This makes the file's
+// existence mean "setup complete" — a restart mid-setup finds no file and reruns
+// the wizard. The identity is derived from the host's primary MAC, so it is the
+// same on every such restart (and on every restart of a container without a
+// volume) as long as the same interface is up at start: the bridge the TV already
+// knows keeps its bridgeid/UUID; only the TV credentials are lost, so the TV
+// re-pairs against a bridge that did not change identity under it. A random
+// serial is used only when no MAC can be found.
 func Load(path string) (*Config, error) {
 	c := &Config{path: path, ApiUsers: map[string]*ApiUser{}}
 
@@ -146,7 +153,7 @@ func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	switch {
 	case os.IsNotExist(err):
-		serial, gerr := generateSerial()
+		serial, gerr := deriveSerial()
 		if gerr != nil {
 			return nil, gerr
 		}
@@ -222,6 +229,19 @@ func (c *Config) PairedDeviceTypes() []string {
 		out = append(out, u.DeviceType)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// ApiUsersSnapshot returns the paired clients (username + devicetype, no clientkey),
+// sorted by username — for the whitelist in the authenticated /config.
+func (c *Config) ApiUsersSnapshot() []ApiUser {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]ApiUser, 0, len(c.ApiUsers))
+	for _, u := range c.ApiUsers {
+		out = append(out, ApiUser{Username: u.Username, DeviceType: u.DeviceType})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Username < out[j].Username })
 	return out
 }
 
@@ -366,6 +386,21 @@ func fsyncDir(dir string) error {
 	defer d.Close()
 	_ = d.Sync()
 	return nil
+}
+
+// hostMAC is the primary-MAC lookup used by deriveSerial; a package variable so
+// tests can pin or remove it.
+var hostMAC = netutil.PrimaryMAC
+
+// deriveSerial returns the 12-digit hex serial for a fresh (file-less) install: the
+// host's primary MAC, so the identity is stable across restarts without any
+// persisted state — like a real bridge, whose bridgeid is its MAC. Falls back to
+// a random serial when no usable interface exists.
+func deriveSerial() (string, error) {
+	if mac, ok := hostMAC(); ok && len(mac) == 6 {
+		return hex.EncodeToString(mac), nil
+	}
+	return generateSerial()
 }
 
 // generateSerial generates a random 12-digit hex serial (6 bytes).

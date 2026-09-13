@@ -143,13 +143,21 @@ func (r *Responder) handle(conn *net.UDPConn, src *net.UDPAddr, data []byte) {
 		return
 	}
 	h := parseHeaders(msg)
+	// Answer only searches that target us (ssdp:all, rootdevice, our uuid, the basic
+	// device type). The TV also searches for its own services (MediaServer, DIAL),
+	// and a Hue answer to those lands in an unrelated UPnP stack. An immediate reply
+	// is important because the TV has a short search window (diyHue #988).
+	responses := r.searchResponses(h["ST"])
+	if len(responses) == 0 {
+		if r.Debug {
+			r.log.Info("ssdp: M-SEARCH ignored (foreign ST)", "from", src.String(), "st", h["ST"])
+		}
+		return
+	}
 	if r.Debug {
 		r.log.Info("ssdp: M-SEARCH answered", "to", src.String(), "st", h["ST"])
 	}
-	// We answer broadly (without strict ST matching), as real bridges do — the
-	// TV filters by LOCATION/description.xml. An immediate reply is important
-	// because the TV has a short search window (diyHue #988).
-	for _, resp := range r.searchResponses() {
+	for _, resp := range responses {
 		if _, err := conn.WriteToUDP([]byte(resp), src); err != nil {
 			r.log.Warn("ssdp respond", "err", err, "to", src.String())
 			return
@@ -168,11 +176,16 @@ func (r *Responder) handle(conn *net.UDPConn, src *net.UDPAddr, data []byte) {
 	}
 }
 
-// searchResponses returns the M-SEARCH 200 OK responses for the configured SSDP variants.
-func (r *Responder) searchResponses() []string {
+// searchResponses returns the M-SEARCH 200 OK responses for the search target: all
+// variants for ssdp:all, the matching variant for one of ours, nothing otherwise.
+func (r *Responder) searchResponses(st string) []string {
+	st = strings.TrimSpace(st)
 	variants := r.ssdpVariants()
 	out := make([]string, 0, len(variants))
 	for _, v := range variants {
+		if !strings.EqualFold(st, "ssdp:all") && !strings.EqualFold(st, v.st) {
+			continue
+		}
 		out = append(out, "HTTP/1.1 200 OK\r\n"+
 			"HOST: 239.255.255.250:1900\r\n"+
 			"EXT:\r\n"+

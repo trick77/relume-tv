@@ -14,12 +14,14 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/trick77/relume-tv/internal/config"
+	"github.com/trick77/relume-tv/internal/netutil"
 	"github.com/trick77/relume-tv/internal/upnp"
 )
 
@@ -39,6 +41,7 @@ type Server struct {
 	advIP    string
 	httpPort int
 	log      *slog.Logger
+	started  time.Time // process start, reported as the whitelist create / update dates
 	lightsMu sync.RWMutex
 	lights   LightProvider
 	// Debug enables verbose request logging (User-Agent + body) — helpful for
@@ -103,7 +106,7 @@ const defaultDTLSFallbackTimeout = 5 * time.Second
 
 // New creates the CLIP-v1 server.
 func New(cfg *config.Config, advIP string, httpPort int, log *slog.Logger) *Server {
-	return &Server{cfg: cfg, advIP: advIP, httpPort: httpPort, log: log,
+	return &Server{cfg: cfg, advIP: advIP, httpPort: httpPort, log: log, started: time.Now().UTC(),
 		activity: newActivityTracker(log),
 		stream:   newStreamState(defaultDTLSFallbackTimeout)}
 }
@@ -260,7 +263,25 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/{user}/sensors", s.handleEmptyCollection)
 	mux.HandleFunc("GET /api/{user}/rules", s.handleEmptyCollection)
 	mux.HandleFunc("GET /api/{user}/resourcelinks", s.handleEmptyCollection)
+	// Anything else under /api/ gets a CLIP-v1 JSON error, never Go's plain-text
+	// "404 page not found" / 405: a Hue client parses every body as JSON.
+	mux.HandleFunc("/api/", s.handleUnknownAPI)
 	return s.logRequests(mux)
+}
+
+// handleUnknownAPI answers unrouted /api/ paths (and known paths with an unsupported
+// method) the way a bridge does: error 3 (resource not available) for reads, error 4
+// (method not available) for writes.
+func (s *Server) handleUnknownAPI(w http.ResponseWriter, r *http.Request) {
+	address := "/" + strings.TrimPrefix(r.URL.Path, "/api/")
+	if i := strings.IndexByte(address[1:], '/'); i >= 0 {
+		address = address[1+i:] // strip the {user} segment, as bridges do
+	}
+	if r.Method == http.MethodGet {
+		writeError(w, 3, address, "resource, "+address+", not available")
+		return
+	}
+	writeError(w, 4, address, "method, "+r.Method+", not available for resource, "+address)
 }
 
 // logRequests logs every request. In debug mode it also logs the User-Agent and
@@ -603,7 +624,79 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(w, r) {
 		return
 	}
-	writeJSON(w, s.shortConfig())
+	writeJSON(w, s.fullConfig())
+}
+
+// fullConfig is the authenticated /api/{user}/config: the short config plus the
+// fields a real bridge returns and a client may dereference without checking —
+// its own whitelist entry, the clock, the network block, update/portal state.
+func (s *Server) fullConfig() map[string]any {
+	c := s.shortConfig()
+	now := time.Now().UTC()
+	const stamp = "2006-01-02T15:04:05"
+	whitelist := map[string]any{}
+	for _, u := range s.cfg.ApiUsersSnapshot() {
+		whitelist[u.Username] = map[string]any{
+			"last use date": now.Format(stamp),
+			"create date":   s.started.Format(stamp),
+			"name":          u.DeviceType,
+		}
+	}
+	netmask, gateway := s.network()
+	c["whitelist"] = whitelist
+	c["UTC"] = now.Format(stamp)
+	c["localtime"] = now.Format(stamp)
+	c["timezone"] = "Etc/UTC"
+	c["linkbutton"] = false
+	c["zigbeechannel"] = 25
+	c["ipaddress"] = s.advIP
+	c["netmask"] = netmask
+	c["gateway"] = gateway
+	c["dhcp"] = true
+	c["proxyaddress"] = "none"
+	c["proxyport"] = 0
+	c["portalservices"] = false
+	c["portalconnection"] = "disconnected"
+	c["portalstate"] = map[string]any{
+		"signedon": false, "incoming": false, "outgoing": false, "communication": "disconnected",
+	}
+	c["internetservices"] = map[string]any{
+		"internet": "disconnected", "remoteaccess": "disconnected", "time": "disconnected", "swupdate": "disconnected",
+	}
+	c["swupdate2"] = map[string]any{
+		"checkforupdate": false,
+		"lastchange":     s.started.Format(stamp),
+		"state":          "noupdates",
+		"bridge":         map[string]any{"state": "noupdates", "lastinstall": s.started.Format(stamp)},
+		"autoinstall":    map[string]any{"updatetime": "T14:00:00", "on": false},
+	}
+	c["backup"] = map[string]any{"status": "idle", "errorcode": 0}
+	return c
+}
+
+// network returns the netmask of the interface carrying the advertised IP and a
+// conventional gateway (the subnet's first host). Informational only; a bridge
+// reports these and some clients read them. Falls back to a /24 when the
+// interface cannot be resolved (tests, unusual hosts).
+func (s *Server) network() (netmask, gateway string) {
+	ip := net.ParseIP(s.advIP).To4()
+	mask := net.CIDRMask(24, 32)
+	if iface, err := netutil.InterfaceForIP(s.advIP); err == nil && ip != nil {
+		if addrs, aerr := iface.Addrs(); aerr == nil {
+			for _, a := range addrs {
+				if ipn, ok := a.(*net.IPNet); ok && ipn.IP.Equal(ip) && len(ipn.Mask) == 4 {
+					mask = ipn.Mask
+				}
+			}
+		}
+	}
+	netmask = net.IP(mask).String()
+	if ip == nil {
+		return netmask, ""
+	}
+	gw := ip.Mask(mask)
+	gw[3]++
+	return netmask, gw.String()
 }
 
 // shortConfig builds the config object; modelid MUST be BSB002.
@@ -635,7 +728,7 @@ func (s *Server) handleDatastore(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]any{
 		"lights":        s.lightsV1(),
-		"groups":        map[string]any{},
+		"groups":        s.groupsV1(),
 		"config":        s.shortConfig(),
 		"schedules":     map[string]any{},
 		"scenes":        map[string]any{},
@@ -742,19 +835,49 @@ func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(w, r) {
 		return
 	}
-	writeJSON(w, map[string]any{
-		"0": s.bridgeGroup("0"),
-		"1": s.bridgeGroup("1"),
-	})
+	writeJSON(w, s.groupsV1())
 }
 
-func (s *Server) bridgeGroup(id string) map[string]any {
+// groupsV1 is the v1 groups map: group 0 (every light) and the TV's entertainment
+// group 1. Shared by GET /groups and the full datastore so both agree.
+func (s *Server) groupsV1() map[string]any {
+	lights := s.cachedLightsV1()
+	return map[string]any{
+		"0": s.bridgeGroup("0", lights),
+		"1": s.bridgeGroup("1", lights),
+	}
+}
+
+// cachedLightsV1 returns the lights without ever waiting on the Pro: the provider's
+// last fetched list when it offers one, else the regular (possibly fetching)
+// path. Group reads never touched the Pro before and must not start to.
+func (s *Server) cachedLightsV1() map[string]any {
+	lp := s.lightProvider()
+	if lp == nil {
+		return map[string]any{}
+	}
+	if c, ok := lp.(interface{ CachedLightsV1() (map[string]any, bool) }); ok {
+		if lights, ok := c.CachedLightsV1(); ok {
+			return lights
+		}
+		return map[string]any{}
+	}
+	return s.lightsV1()
+}
+
+// bridgeGroup renders one v1 group in the shape a real bridge returns. Group 0
+// lists every light; group 1 lists the subset the TV declared for its Ambilight
+// zone (everything until it declares one). The membership is echoed back rather
+// than a constant empty array, so a client re-reading its group sees what it
+// created (while the light list is still unknown it is empty either way).
+func (s *Server) bridgeGroup(id string, lights map[string]any) map[string]any {
 	groupType := "Entertainment"
 	name := "relume-tv Entertainment"
 	if id == "0" {
 		groupType = "LightGroup"
 		name = "Group 0"
 	}
+	members := groupLightIDs(lights, id == "1", s.requestedMembers())
 	// Default: inactive stream. In entertainment mode, reflect the activation the TV
 	// requested so it treats the stream as live and proceeds to open the DTLS
 	// connection (which the :2100 receiver then services).
@@ -767,19 +890,88 @@ func (s *Server) bridgeGroup(id string) map[string]any {
 			streamOwner = owner
 		}
 	}
-	return map[string]any{
-		"name":   name,
-		"lights": []string{},
-		"type":   groupType,
-		"state":  map[string]any{"all_on": false, "any_on": false},
-		"action": map[string]any{},
-		"stream": map[string]any{
+	anyOn, allOn := groupOnState(lights, members)
+	g := map[string]any{
+		"name":    name,
+		"lights":  members,
+		"sensors": []string{},
+		"type":    groupType,
+		"state":   map[string]any{"all_on": allOn, "any_on": anyOn},
+		"recycle": false,
+		"action": map[string]any{
+			"on": anyOn, "bri": 254, "hue": 0, "sat": 0, "effect": "none",
+			"xy": []float64{0.3127, 0.329}, "ct": 153, "alert": "none", "colormode": "xy",
+		},
+	}
+	if id == "1" {
+		g["class"] = "TV"
+		g["locations"] = groupLocations(members)
+		g["stream"] = map[string]any{
 			"active":    streamActive,
 			"owner":     streamOwner,
 			"proxymode": "auto",
 			"proxynode": "/bridge",
-		},
+		}
 	}
+	return g
+}
+
+// requestedMembers returns the TV's declared entertainment subset, or nil when it
+// has not declared one yet.
+func (s *Server) requestedMembers() map[uint16]bool {
+	s.reqMu.RLock()
+	defer s.reqMu.RUnlock()
+	return s.reqMembers
+}
+
+// groupLightIDs lists the v1 ids of a group in ascending numeric order: every
+// light, or (for the entertainment group with a declared subset) only the members.
+func groupLightIDs(lights map[string]any, entertainment bool, members map[uint16]bool) []string {
+	ids := make([]int, 0, len(lights))
+	for id := range lights {
+		n, err := strconv.Atoi(id)
+		if err != nil {
+			continue
+		}
+		if entertainment && members != nil && !members[uint16(n)] {
+			continue
+		}
+		ids = append(ids, n)
+	}
+	sort.Ints(ids)
+	out := make([]string, len(ids))
+	for i, n := range ids {
+		out[i] = strconv.Itoa(n)
+	}
+	return out
+}
+
+// groupOnState folds the members' v1 on-state into the group's any_on / all_on.
+func groupOnState(lights map[string]any, members []string) (anyOn, allOn bool) {
+	allOn = len(members) > 0
+	for _, id := range members {
+		l, _ := lights[id].(map[string]any)
+		st, _ := l["state"].(map[string]any)
+		on, _ := st["on"].(bool)
+		anyOn = anyOn || on
+		allOn = allOn && on
+	}
+	return anyOn, allOn
+}
+
+// groupLocations synthesises entertainment positions for the members: evenly
+// spread along the back wall (x from -1 to 1, y = 1, z = 0). The TV supplies the
+// real geometry on its side; the bridge merely has to return one per light.
+func groupLocations(members []string) map[string][]float64 {
+	out := make(map[string][]float64, len(members))
+	for i, id := range members {
+		x := 0.0
+		if n := len(members); n > 1 {
+			x = -1 + 2*float64(i)/float64(n-1)
+		}
+		out[id] = []float64{math.Round(x*100) / 100, 1, 0}
+	}
+	return out
 }
 
 func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
@@ -791,7 +983,7 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 3, "/groups/"+id, "resource, /groups/"+id+", not available")
 		return
 	}
-	writeJSON(w, s.bridgeGroup(id))
+	writeJSON(w, s.bridgeGroup(id, s.cachedLightsV1()))
 }
 
 func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {

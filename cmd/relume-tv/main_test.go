@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
@@ -558,6 +559,47 @@ func TestDeriveServeConfig(t *testing.T) {
 			t.Fatalf("idleOff = %v, want 0 (disabled)", sc.idleOff)
 		}
 	})
+
+	t.Run("entertainment mode keeps the rest idle-off for the REST fallback", func(t *testing.T) {
+		o := base
+		o.idleOffEntertainment = 5 * time.Second
+		o.idleOffRest = 30 * time.Second
+		sc, _ := deriveServeConfig(o)
+		if sc.idleOff != 5*time.Second || sc.idleOffFallback != 30*time.Second {
+			t.Fatalf("idleOff = %v, idleOffFallback = %v; want 5s / 30s", sc.idleOff, sc.idleOffFallback)
+		}
+	})
+
+	t.Run("controlled window is sized against the larger of both idle-offs", func(t *testing.T) {
+		o := base
+		o.idleOffEntertainment = 5 * time.Second
+		o.idleOffRest = 50 * time.Second // window 60s < 50+15=65s → raise
+		sc, _ := deriveServeConfig(o)
+		if !sc.windowRaised || sc.controlledWindow != 65*time.Second {
+			t.Fatalf("expected raised window 65s, got %+v", sc)
+		}
+	})
+}
+
+func TestIdleTimeoutFor(t *testing.T) {
+	const rest, ent = 30 * time.Second, 5 * time.Second
+	cases := []struct {
+		name          string
+		entertainment bool
+		fallback      bool
+		want          time.Duration
+	}{
+		{"rest mode", false, false, rest},
+		{"entertainment streaming", true, false, ent},
+		{"entertainment on REST fallback", true, true, rest},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := idleTimeoutFor(c.entertainment, c.fallback, rest, ent); got != c.want {
+				t.Fatalf("idleTimeoutFor = %v, want %v", got, c.want)
+			}
+		})
+	}
 }
 
 func TestUIPortFor(t *testing.T) {
@@ -681,5 +723,21 @@ func TestProWatcher_checkIntervalDropsToSteadyAfterCommit(t *testing.T) {
 	}
 	if got := w.checkInterval(); got != 60*time.Second {
 		t.Fatalf("checkInterval after commit = %s, want 60s", got)
+	}
+}
+
+func TestNewTVServer_boundsStalledConnectionsButNeverTruncatesResponses(t *testing.T) {
+	// When
+	srv := newTVServer(80, http.NotFoundHandler())
+
+	// Then: header/idle timeouts set, no write deadline (Pro round-trip may take 10 s)
+	if srv.Addr != ":80" {
+		t.Errorf("Addr = %q", srv.Addr)
+	}
+	if srv.ReadHeaderTimeout <= 0 || srv.ReadTimeout <= 0 || srv.IdleTimeout <= 0 {
+		t.Errorf("ReadHeaderTimeout=%s ReadTimeout=%s IdleTimeout=%s; want all > 0", srv.ReadHeaderTimeout, srv.ReadTimeout, srv.IdleTimeout)
+	}
+	if srv.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout = %s; want 0 (a deadline would truncate a Pro-bound response)", srv.WriteTimeout)
 	}
 }

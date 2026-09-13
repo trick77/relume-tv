@@ -288,8 +288,8 @@ func TestHandle_withDebugOffSendsResponsesButLogsNothing(t *testing.T) {
 	r.handle(server, src, []byte("M-SEARCH * HTTP/1.1\r\nST: upnp:rootdevice\r\n\r\n"))
 
 	// Then: discovery still works, it is just quiet
-	if got := readAll(t, client); len(got) != 3 {
-		t.Fatalf("got %d responses, want 3", len(got))
+	if got := readAll(t, client); len(got) != 1 {
+		t.Fatalf("got %d responses, want 1 (the rootdevice variant only)", len(got))
 	}
 	if buf.Len() != 0 {
 		t.Errorf("expected no log output with Debug off, got %q", buf.String())

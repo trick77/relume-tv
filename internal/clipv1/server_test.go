@@ -2,6 +2,7 @@ package clipv1
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -1317,4 +1318,154 @@ func TestDescriptor_OnDescriptorFetch_nilSafe(t *testing.T) {
 	// When/Then: a TV descriptor fetch must not panic
 	resp := mustGetUA(t, ts.URL+"/description.xml", tvUserAgent)
 	resp.Body.Close()
+}
+
+// A Hue client parses every body as JSON, so an unrouted /api path or an
+// unsupported method must produce a CLIP error, never Go's plain-text 404/405.
+func TestUnknownAPIPath_returnsCLIPErrorJSON(t *testing.T) {
+	_, ts := newTestServer(t)
+	user := pairTV(t, ts)
+
+	cases := []struct {
+		method, path string
+		wantType     float64
+		wantAddress  string
+	}{
+		{http.MethodGet, "/api/" + user + "/nosuchthing", 3, "/nosuchthing"},
+		{http.MethodGet, "/api/" + user + "/lights/1/nosuch", 3, "/lights/1/nosuch"},
+		{http.MethodDelete, "/api/" + user + "/lights/1", 4, "/lights/1"},
+		{http.MethodPut, "/api/" + user + "/lights", 4, "/lights"},
+	}
+	for _, c := range cases {
+		req, _ := http.NewRequest(c.method, ts.URL+c.path, strings.NewReader("{}"))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", c.method, c.path, err)
+		}
+		var body []map[string]map[string]any
+		decodeErr := json.NewDecoder(resp.Body).Decode(&body)
+		resp.Body.Close()
+		if decodeErr != nil || len(body) != 1 || body[0]["error"] == nil {
+			t.Fatalf("%s %s: not a CLIP error array (decode err %v): %v", c.method, c.path, decodeErr, body)
+		}
+		if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+			t.Errorf("%s %s: Content-Type = %q", c.method, c.path, ct)
+		}
+		e := body[0]["error"]
+		if e["type"] != c.wantType || e["address"] != c.wantAddress {
+			t.Errorf("%s %s: error = %v, want type %v address %q", c.method, c.path, e, c.wantType, c.wantAddress)
+		}
+	}
+}
+
+// The authenticated /config carries the fields a real bridge returns and a client
+// may dereference unguarded: its own whitelist entry, the clock, the network block.
+func TestFullConfig_carriesWhitelistClockAndNetwork(t *testing.T) {
+	_, ts := newTestServer(t)
+	user := pairTV(t, ts)
+
+	resp := mustGet(t, ts.URL+"/api/"+user+"/config")
+	defer resp.Body.Close()
+	var cfg map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	for _, key := range []string{"whitelist", "UTC", "localtime", "timezone", "linkbutton", "zigbeechannel",
+		"ipaddress", "netmask", "gateway", "dhcp", "swupdate2", "portalstate", "internetservices", "backup",
+		"name", "bridgeid", "modelid", "apiversion"} {
+		if _, ok := cfg[key]; !ok {
+			t.Errorf("full config missing %q", key)
+		}
+	}
+	wl, _ := cfg["whitelist"].(map[string]any)
+	entry, _ := wl[user].(map[string]any)
+	if entry == nil || entry["name"] != "Philips_TV#Ambilight" {
+		t.Errorf("whitelist[%s] = %v; want the TV's devicetype as name", user, entry)
+	}
+	if cfg["ipaddress"] != "10.0.0.5" || cfg["netmask"] == "" {
+		t.Errorf("network block = ip %v mask %v gw %v", cfg["ipaddress"], cfg["netmask"], cfg["gateway"])
+	}
+
+	// The short, unauthenticated config stays minimal (no whitelist leak).
+	short := mustGet(t, ts.URL+"/api/config")
+	defer short.Body.Close()
+	var sc map[string]any
+	json.NewDecoder(short.Body).Decode(&sc)
+	if _, ok := sc["whitelist"]; ok {
+		t.Error("short config must not expose the whitelist")
+	}
+}
+
+// Group 1 echoes the TV's declared membership (a client that reads back
+// `lights: []` may loop re-creating its group); group 0 lists every light; the
+// datastore carries the same groups as GET /groups.
+func TestGroups_reflectMembershipAndAppearInDatastore(t *testing.T) {
+	s, ts := newTestServer(t)
+	s.SetLightProvider(fakeLightProvider{lights: map[string]any{
+		"1": map[string]any{"state": map[string]any{"on": true}},
+		"2": map[string]any{"state": map[string]any{"on": false}},
+		"3": map[string]any{"state": map[string]any{"on": true}},
+	}})
+	user := pairTV(t, ts)
+
+	// Given: the TV creates its entertainment group with lights 3 and 1
+	mustPost(t, ts.URL+"/api/"+user+"/groups", `{"type":"Entertainment","name":"TV","lights":["3","1"],"class":"TV"}`).Body.Close()
+
+	// When
+	resp := mustGet(t, ts.URL+"/api/"+user+"/groups/1")
+	defer resp.Body.Close()
+	var g1 map[string]any
+	json.NewDecoder(resp.Body).Decode(&g1)
+
+	// Then: membership echoed in order, positions per member, the bridge extras
+	if got := fmt.Sprint(g1["lights"]); got != "[1 3]" {
+		t.Errorf("group 1 lights = %v, want [1 3]", g1["lights"])
+	}
+	locs, _ := g1["locations"].(map[string]any)
+	if len(locs) != 2 || locs["1"] == nil || locs["3"] == nil {
+		t.Errorf("group 1 locations = %v, want one per member", g1["locations"])
+	}
+	if g1["class"] != "TV" || g1["recycle"] != false {
+		t.Errorf("group 1 class/recycle = %v/%v", g1["class"], g1["recycle"])
+	}
+	st, _ := g1["state"].(map[string]any)
+	if st["any_on"] != true || st["all_on"] != true {
+		t.Errorf("group 1 state = %v, want any_on and all_on (1 and 3 are on)", st)
+	}
+	action, _ := g1["action"].(map[string]any)
+	if action["on"] != true || action["xy"] == nil {
+		t.Errorf("group 1 action = %v, want a populated action", action)
+	}
+
+	// Group 0 spans every light and the datastore agrees with /groups
+	ds := mustGet(t, ts.URL+"/api/"+user)
+	defer ds.Body.Close()
+	var store map[string]any
+	json.NewDecoder(ds.Body).Decode(&store)
+	groups, _ := store["groups"].(map[string]any)
+	g0, _ := groups["0"].(map[string]any)
+	if got := fmt.Sprint(g0["lights"]); got != "[1 2 3]" {
+		t.Errorf("datastore group 0 lights = %v, want [1 2 3]", g0["lights"])
+	}
+	if groups["1"] == nil {
+		t.Errorf("datastore groups = %v, want group 1 present", groups)
+	}
+	g0st, _ := g0["state"].(map[string]any)
+	if g0st["any_on"] != true || g0st["all_on"] != false {
+		t.Errorf("group 0 state = %v, want any_on, not all_on (2 is off)", g0st)
+	}
+}
+
+func TestGroupLightIDs_noSubsetYetListsEveryLight(t *testing.T) {
+	lights := map[string]any{"10": nil, "2": nil, "x": nil}
+	if got := fmt.Sprint(groupLightIDs(lights, true, nil)); got != "[2 10]" {
+		t.Errorf("groupLightIDs = %v, want numeric order without the non-numeric id", got)
+	}
+	if got := groupLocations(nil); len(got) != 0 {
+		t.Errorf("groupLocations(nil) = %v", got)
+	}
+	if got := groupLocations([]string{"7"}); fmt.Sprint(got["7"]) != "[0 1 0]" {
+		t.Errorf("single-light location = %v, want centred", got["7"])
+	}
 }

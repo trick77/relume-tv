@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -121,6 +122,101 @@ func TestReceiver_slowSinkDropsFramesWithoutBlocking(t *testing.T) {
 	if got == 0 {
 		t.Fatalf("delivered 0 frames — the queue should still pass some through")
 	}
+}
+
+// eventLog records OnStreamStart/OnStreamStop calls in order.
+type eventLog struct {
+	mu     sync.Mutex
+	events []string
+	ch     chan string
+}
+
+func newEventLog() *eventLog { return &eventLog{ch: make(chan string, 16)} }
+
+func (l *eventLog) add(e string) {
+	l.mu.Lock()
+	l.events = append(l.events, e)
+	l.mu.Unlock()
+	l.ch <- e
+}
+
+func (l *eventLog) wait(t *testing.T, want string) {
+	t.Helper()
+	select {
+	case got := <-l.ch:
+		if got != want {
+			t.Fatalf("event = %q, want %q (all so far: %v)", got, want, l.all())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for event %q (all so far: %v)", want, l.all())
+	}
+}
+
+func (l *eventLog) all() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.events...)
+}
+
+func TestReceiver_idleSessionClosesAndFiresStopOnce(t *testing.T) {
+	// Given: a receiver with a short idle timeout and a TV that goes silent
+	events := newEventLog()
+	r := &Receiver{
+		log:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		IdleTimeout:   50 * time.Millisecond,
+		OnStreamStart: func(string) { events.add("start") },
+		OnStreamStop:  func(string) { events.add("stop") },
+	}
+	client, server := net.Pipe()
+	defer client.Close()
+	handleDone := make(chan struct{})
+	go func() { r.handle(context.Background(), server); close(handleDone) }()
+	events.wait(t, "start")
+	if _, err := client.Write(v1FrameLightsSixEleven()); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// When: no further frames arrive (the client never closes)
+
+	// Then: the session ends on its own and OnStreamStop fires exactly once
+	events.wait(t, "stop")
+	select {
+	case <-handleDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handle did not return after the idle timeout")
+	}
+	if got := events.all(); len(got) != 2 {
+		t.Fatalf("events = %v; want exactly [start stop]", got)
+	}
+}
+
+func TestReceiver_newSessionStopsThePreviousOneBeforeStarting(t *testing.T) {
+	// Given: a live TV session that never sends a close_notify
+	events := newEventLog()
+	r := &Receiver{
+		log:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		IdleTimeout:   time.Minute, // idle must not be what ends the first session
+		OnStreamStart: func(remote string) { events.add("start " + remote) },
+		OnStreamStop:  func(remote string) { events.add("stop " + remote) },
+	}
+	clientA, serverA := net.Pipe()
+	defer clientA.Close()
+	go r.handle(context.Background(), serverA)
+	events.wait(t, "start "+serverA.RemoteAddr().String())
+
+	// When: a second handshake completes while the first is still open
+	clientB, serverB := net.Pipe()
+	doneB := make(chan struct{})
+	go func() { r.handle(context.Background(), serverB); close(doneB) }()
+
+	// Then: the first session is stopped before the second starts (never
+	// interleaved, so the streamer's Stop cannot tear down the new Pro path)
+	events.wait(t, "stop "+serverA.RemoteAddr().String())
+	events.wait(t, "start "+serverB.RemoteAddr().String())
+
+	clientB.Close()
+	events.wait(t, "stop "+serverB.RemoteAddr().String())
+	<-doneB
 }
 
 // v1FrameLightsSixEleven builds a minimal HueStream v1 RGB frame for lights 6/11.

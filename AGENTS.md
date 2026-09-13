@@ -63,7 +63,7 @@ All repo content (docs, code comments, logs) is English.
   of bridgeid, spaces around the dash), TXT bridgeid+modelid. diyHue `DIYHue-XXXXXX` is NOT found.
 - The real Bridge Pro announces `_hue._tcp` as `Hue Bridge - XXXXXX`/`modelid=BSB003`; TV likely
   filters BSB003 out. Port 10102 TV broadcasts = DTS Play-Fi (audio), red herring.
-- SSDP still served (3 ST: rootdevice, uuid, basic) but secondary; respond instantly (short window).
+- SSDP still served (3 ST: rootdevice, uuid, basic) but secondary; respond instantly (short window), but ONLY to ssdp:all or one of our own STs: the TV searches MediaServer/DIAL for itself and a Hue reply to those lands in an unrelated UPnP stack.
 - multi-NIC: bind multicast to the iface owning advertise-IP (else Go picks the default iface = wrong
   LAN). Dual-homed host = bad test env. macOS mDNSResponder owns 5353 → test on Linux (NAS).
 
