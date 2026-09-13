@@ -6,6 +6,7 @@ package entertainment
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -43,7 +44,30 @@ type Receiver struct {
 	// and colour jump on the *incoming* TV stream over that window. The streamer reports
 	// the same on its sent (smoothed) stream; the gap is the jitter the easing removed.
 	OnWindowStats func(briJump, colJump uint32)
+	// IdleTimeout closes a session that delivers no frame for this long (0 = the
+	// DefaultIdleTimeout). A TV that vanishes without a DTLS close_notify (power cut,
+	// Wi-Fi drop) would otherwise leave the session — and OnStreamStop — pending
+	// forever, and its next handshake from the same source port would be demuxed
+	// onto the dead session.
+	IdleTimeout time.Duration
+
+	// One live TV session at a time: a new handshake replaces the previous session
+	// (closing it and waiting for its OnStreamStop) before its own OnStreamStart
+	// runs, so the streamer's Stop/Start never interleave across sessions.
+	sessMu sync.Mutex
+	cur    *session
 }
+
+// session is one accepted TV DTLS connection; done is closed once its handler,
+// OnStreamStop included, has returned.
+type session struct {
+	conn net.Conn
+	done chan struct{}
+}
+
+// DefaultIdleTimeout mirrors a real bridge, which drops an entertainment stream
+// after about 10 s without frames. It sits above the 5 s entertainment idle-off.
+const DefaultIdleTimeout = 10 * time.Second
 
 // NewReceiver creates the receiver. bindIP is the advertised IP (pins the socket
 // to the TV-facing interface on a multi-homed host).
@@ -111,12 +135,39 @@ func (r *Receiver) handle(ctx context.Context, conn net.Conn) {
 			return
 		}
 	}
+	// Replace any previous session: close it and wait until its handler (and thus
+	// its OnStreamStop) has returned before this session starts.
+	mine := &session{conn: conn, done: make(chan struct{})}
+	r.sessMu.Lock()
+	replaced := r.cur
+	r.cur = mine
+	r.sessMu.Unlock()
+	if replaced != nil {
+		r.log.Info("entertainment: new TV stream replaces the previous session", "from", remote, "previous", replaced.conn.RemoteAddr().String())
+		_ = replaced.conn.Close()
+		<-replaced.done
+	}
+	defer func() {
+		// Registered before OnStreamStop's defer, so it runs after it (LIFO).
+		r.sessMu.Lock()
+		if r.cur == mine {
+			r.cur = nil
+		}
+		r.sessMu.Unlock()
+		close(mine.done)
+	}()
+
 	r.log.Info("entertainment stream connected", "from", remote)
 	if r.OnStreamStart != nil {
 		r.OnStreamStart(remote)
 	}
 	if r.OnStreamStop != nil {
 		defer r.OnStreamStop(remote)
+	}
+
+	idle := r.IdleTimeout
+	if idle <= 0 {
+		idle = DefaultIdleTimeout
 	}
 
 	var (
@@ -133,6 +184,9 @@ func (r *Receiver) handle(ctx context.Context, conn net.Conn) {
 		briJump  uint32 // largest |Δbrightness| between consecutive frames
 		colJump  uint32 // largest colour jump between consecutive frames
 		nearZero uint64 // channel samples below nearZeroBri (a black-flash indicator)
+		// closeReason names why the reader stopped: "closed" (peer close_notify, ctx,
+		// or a replacing session) or "idle" (no frame within IdleTimeout).
+		closeReason = "closed"
 	)
 	done := make(chan struct{})
 
@@ -165,8 +219,15 @@ func (r *Receiver) handle(ctx context.Context, conn net.Conn) {
 		}
 		buf := make([]byte, 2048)
 		for {
+			_ = conn.SetReadDeadline(time.Now().Add(idle))
 			n, rerr := conn.Read(buf)
 			if rerr != nil {
+				var ne net.Error
+				if errors.As(rerr, &ne) && ne.Timeout() {
+					mu.Lock()
+					closeReason = "idle"
+					mu.Unlock()
+				}
 				return
 			}
 			f, perr := huestream.Parse(buf[:n])
@@ -241,9 +302,9 @@ func (r *Receiver) handle(ctx context.Context, conn net.Conn) {
 		case <-done:
 			<-fwdDone // let the forwarder drain queued frames before OnStreamStop
 			mu.Lock()
-			total, drops := frames, dropped
+			total, drops, reason := frames, dropped, closeReason
 			mu.Unlock()
-			r.log.Info("entertainment stream closed", "from", remote, "frames_total", total, "frames_dropped", drops)
+			r.log.Info("entertainment stream closed", "from", remote, "reason", reason, "frames_total", total, "frames_dropped", drops)
 			return
 		case <-t.C:
 			mu.Lock()
