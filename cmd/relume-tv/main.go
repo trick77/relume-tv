@@ -122,7 +122,7 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	disableSSDP := fs.Bool("disable-ssdp", false, "do not run the SSDP responder (mDNS-only, like ha-hue-entertainment) — diagnostic")
 	skipTLS := fs.Bool("skip-tls-verify", false, "skip TLS verification to the Hue Bridge Pro (instead of cert pinning)")
 	idleOffRest := fs.Duration("idle-off-timeout-rest", defaultIdleOffRest, "rest mode: when the TV stops sending light writes for this long, turn the lights off (0 = disabled)")
-	idleOffEntertainment := fs.Duration("idle-off-timeout-entertainment", defaultIdleOffEntertainment, "entertainment mode: when the TV stops streaming/writing for this long, turn the lights off (0 = disabled)")
+	idleOffEntertainment := fs.Duration("idle-off-timeout-entertainment", defaultIdleOffEntertainment, "entertainment mode: when the TV stops streaming/writing for this long, turn the lights off; the rest value applies while on the REST fallback (0 = disabled)")
 	controlledLightWindow := fs.Duration("controlled-light-window", time.Minute, "sliding window: a light counts as a current Ambilight light only if the TV drove it within this window; the restart/idle turn-off touches only those (so config changes are forgotten after the window)")
 	mode := fs.String("mode", "entertainment", "control mode: 'entertainment' (default, low-latency DTLS stream to the Pro; auto-falls back to REST if the TV never opens its stream) or 'rest' (per-light REST-follow)")
 	dtlsFallbackTimeout := fs.Duration("entertainment-dtls-timeout", 5*time.Second, "entertainment mode: how long to wait after confirming the TV's stream activation for the TV to open its DTLS stream on :2100 before reverting to REST-follow")
@@ -165,6 +165,7 @@ func parseServeOptions(args []string) (serveOptions, error) {
 type serveConfig struct {
 	entertainmentMode bool          // control path: entertainment (DTLS) vs rest-follow
 	idleOff           time.Duration // idle-off timeout selected for the active mode (0 = disabled)
+	idleOffFallback   time.Duration // idle-off while entertainment mode sits on the REST fallback (= idleOff in rest mode)
 	controlledWindow  time.Duration // sliding window for the currently-driven lights
 	windowRaised      bool          // true if controlledWindow was raised to exceed idle-off
 	activityWindow    time.Duration // cadence of the periodic activity summary
@@ -187,17 +188,19 @@ func deriveServeConfig(opts serveOptions) (serveConfig, error) {
 		return serveConfig{}, fmt.Errorf("web UI port %d clashes with -http-port; choose another (e.g. %d)", uiPort, uiDefaultPort)
 	}
 
-	// Select the idle-off timeout for the active control mode (0 = disabled).
-	idleOff := opts.idleOffRest
-	if ent {
-		idleOff = opts.idleOffEntertainment
-	}
+	// Select the idle-off timeout for the active control mode (0 = disabled). In
+	// entertainment mode the REST value still applies while relume-tv sits on the
+	// latched REST fallback: REST writes pause on static scenes, so the short
+	// entertainment timeout would turn the lights off mid-viewing there.
+	idleOff := idleTimeoutFor(ent, false, opts.idleOffRest, opts.idleOffEntertainment)
+	idleOffFallback := idleTimeoutFor(ent, true, opts.idleOffRest, opts.idleOffEntertainment)
 
 	// The controlled-light window must exceed the idle-off timeout, or the set would
-	// already be empty by the time idle-off fires (nothing left to turn off).
+	// already be empty by the time idle-off fires (nothing left to turn off). Either
+	// timeout can be the active one, so size against the larger.
 	window := opts.controlledLightWindow
 	raised := false
-	if minWindow := idleOff + 15*time.Second; idleOff > 0 && window < minWindow {
+	if minWindow := max(idleOff, idleOffFallback) + 15*time.Second; max(idleOff, idleOffFallback) > 0 && window < minWindow {
 		window = minWindow
 		raised = true
 	}
@@ -211,6 +214,7 @@ func deriveServeConfig(opts serveOptions) (serveConfig, error) {
 	return serveConfig{
 		entertainmentMode: ent,
 		idleOff:           idleOff,
+		idleOffFallback:   idleOffFallback,
 		controlledWindow:  window,
 		windowRaised:      raised,
 		activityWindow:    activityWindow,
@@ -521,9 +525,15 @@ func runServe(args []string, log *slog.Logger) error {
 	// Detect the TV going silent (switched off / control session broke) and turn
 	// the lights off — the TV sends no off signal, it just stops writing. Disabled
 	// when the timeout is 0.
-	if sc.idleOff > 0 {
-		log.Info("idle-off monitor active", "timeout", sc.idleOff.String())
-		go monitorIdle(ctx, clip, cfg, controlled, sc.idleOff, log)
+	if sc.idleOff > 0 || sc.idleOffFallback > 0 {
+		log.Info("idle-off monitor active", "timeout", sc.idleOff.String(), "timeout_rest_fallback", sc.idleOffFallback.String())
+		timeout := func() time.Duration {
+			if sc.entertainmentMode && clip.InFallback() {
+				return sc.idleOffFallback
+			}
+			return sc.idleOff
+		}
+		go monitorIdle(ctx, clip, cfg, controlled, timeout, log)
 	}
 
 	go func() {
@@ -672,13 +682,11 @@ func shutdownHTTP(srv *http.Server) {
 // off (bridge.TurnOffControlled). The TV sends no explicit off signal — it just
 // stops writing — so this inactivity timeout stands in for it. It fires once per
 // active→idle transition and re-arms when the TV resumes writing. The turn-off is a
-// no-op while no Pro is paired or the Pro is unreachable.
-func monitorIdle(ctx context.Context, clip *clipv1.Server, cfg *config.Config, controlled *bridge.ControlledSet, idleTimeout time.Duration, log *slog.Logger) {
-	interval := 2 * time.Second
-	if idleTimeout < interval {
-		interval = idleTimeout
-	}
-	t := time.NewTicker(interval)
+// no-op while no Pro is paired or the Pro is unreachable. timeout is consulted on
+// every tick because the applicable value depends on the current control path
+// (entertainment vs latched REST fallback); 0 means disabled on that path.
+func monitorIdle(ctx context.Context, clip *clipv1.Server, cfg *config.Config, controlled *bridge.ControlledSet, timeout func() time.Duration, log *slog.Logger) {
+	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
 
 	var lastSeen time.Time
@@ -694,7 +702,8 @@ func monitorIdle(ctx context.Context, clip *clipv1.Server, cfg *config.Config, c
 				lastSeen, fired = act, false
 				continue
 			}
-			if !idleShouldFire(now, lastSeen, fired, idleTimeout) {
+			idleTimeout := timeout()
+			if idleTimeout <= 0 || !idleShouldFire(now, lastSeen, fired, idleTimeout) {
 				continue
 			}
 			fired = true
@@ -706,6 +715,16 @@ func monitorIdle(ctx context.Context, clip *clipv1.Server, cfg *config.Config, c
 			}
 		}
 	}
+}
+
+// idleTimeoutFor picks the idle-off timeout for a control path: the entertainment
+// value only while entertainment mode is actually streaming; the REST value in rest
+// mode and while entertainment mode sits on the latched REST fallback.
+func idleTimeoutFor(entertainment, fallback bool, rest, ent time.Duration) time.Duration {
+	if entertainment && !fallback {
+		return ent
+	}
+	return rest
 }
 
 // idleShouldFire reports whether the idle-off should fire this tick: the TV
