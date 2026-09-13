@@ -62,6 +62,12 @@ type LightProvider struct {
 	v1ToUUID  map[string]string
 	uuidToV1  map[string]string
 	fetchedAt time.Time
+	// refresh is non-nil while a Pro fetch is in flight (closed when it finishes), so
+	// concurrent callers past the TTL wait for it instead of starting their own.
+	// lastErr is that fetch's result, for waiters that find no cache to serve.
+	refresh      chan struct{}
+	lastErr      error
+	lastStaleLog time.Time
 
 	// Optimistic REST control: the TV's per-light writes are acknowledged
 	// immediately (see SetLightV1) and forwarded to the Hue Bridge Pro asynchronously
@@ -104,14 +110,53 @@ func NewLightProvider(client *bridgepro.Client, log *slog.Logger) *LightProvider
 }
 
 // LightsV1 returns the v1 light list (with a short cache).
+//
+// The Hue Bridge Pro round-trip (up to the client's 10 s timeout) never runs under
+// p.mu: the TV polls GET /lights/{id} at a few Hz and a slow or unreachable Pro must
+// not stall those polls behind a lock — nor the id lookups the DTLS path needs.
+// Concurrent callers past the TTL share one fetch. When a refresh fails but an
+// earlier one succeeded, the last known list is served (the TV keeps a consistent
+// light set while the Pro is briefly away); an error surfaces only when there has
+// never been a successful fetch.
 func (p *LightProvider) LightsV1() (map[string]any, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.cached != nil && time.Since(p.fetchedAt) < lightCacheTTL {
-		return p.cached, nil
+		cached := p.cached
+		p.mu.Unlock()
+		return cached, nil
 	}
+	if p.refresh != nil {
+		// A refresh is in flight: wait for it rather than piling a second Pro request
+		// on top, then serve whatever it produced.
+		done := p.refresh
+		p.mu.Unlock()
+		<-done
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.cached != nil {
+			return p.cached, nil
+		}
+		return nil, p.lastErr
+	}
+	done := make(chan struct{})
+	p.refresh = done
+	p.mu.Unlock()
+
 	lights, err := p.client.Lights()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.refresh = nil
+	p.lastErr = err
+	close(done)
 	if err != nil {
+		if p.cached != nil {
+			if p.log != nil && time.Since(p.lastStaleLog) >= errLogInterval {
+				p.lastStaleLog = time.Now()
+				p.log.Warn("reading lights from hue bridge pro failed, serving the last known list", "err", err)
+			}
+			return p.cached, nil
+		}
 		return nil, err
 	}
 	lm := translate.LightsV1(lights)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
@@ -681,5 +682,21 @@ func TestProWatcher_checkIntervalDropsToSteadyAfterCommit(t *testing.T) {
 	}
 	if got := w.checkInterval(); got != 60*time.Second {
 		t.Fatalf("checkInterval after commit = %s, want 60s", got)
+	}
+}
+
+func TestNewTVServer_boundsStalledConnectionsButNeverTruncatesResponses(t *testing.T) {
+	// When
+	srv := newTVServer(80, http.NotFoundHandler())
+
+	// Then: header/idle timeouts set, no write deadline (Pro round-trip may take 10 s)
+	if srv.Addr != ":80" {
+		t.Errorf("Addr = %q", srv.Addr)
+	}
+	if srv.ReadHeaderTimeout <= 0 || srv.IdleTimeout <= 0 {
+		t.Errorf("ReadHeaderTimeout=%s IdleTimeout=%s; want both > 0", srv.ReadHeaderTimeout, srv.IdleTimeout)
+	}
+	if srv.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout = %s; want 0 (a deadline would truncate a Pro-bound response)", srv.WriteTimeout)
 	}
 }

@@ -543,10 +543,7 @@ func runServe(args []string, log *slog.Logger) error {
 		log.Info("debug mode active: SSDP/HTTP diagnostics + mDNS observer", "tvIP", opts.tvIP)
 	}
 
-	httpSrv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", opts.httpPort),
-		Handler: clip.Handler(),
-	}
+	httpSrv := newTVServer(opts.httpPort, clip.Handler())
 
 	errc := make(chan error, 2)
 	go func() {
@@ -907,6 +904,20 @@ func hostname() string {
 		return "host"
 	}
 	return h
+}
+
+// newTVServer builds the TV-facing HTTP server. Header and idle timeouts bound how
+// long a stalled or abandoned TV connection can hold a goroutine; there is
+// deliberately NO WriteTimeout: a response may legitimately wait on the Hue Bridge
+// Pro round-trip (up to its 10 s client timeout), and a write deadline shorter than
+// that would truncate the body mid-response — worse for the TV than a slow answer.
+func newTVServer(port int, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              fmt.Sprintf(":%d", port),
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 }
 
 // outboundIP determines the local IPv4 over which outbound traffic flows.

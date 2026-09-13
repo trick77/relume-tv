@@ -271,3 +271,135 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 	t.Fatal("condition not met within deadline")
 }
+
+// lightsClient serves a scripted Lights() result. Each call blocks on gate (if
+// set) so a test can observe what other callers do while a Pro fetch is in flight.
+type lightsClient struct {
+	mu     sync.Mutex
+	lights []bridgepro.Light
+	err    error
+	gate   chan struct{}
+	calls  int
+}
+
+func (c *lightsClient) Lights() ([]bridgepro.Light, error) {
+	c.mu.Lock()
+	c.calls++
+	gate, lights, err := c.gate, c.lights, c.err
+	c.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	return lights, err
+}
+
+func (c *lightsClient) SetLight(string, map[string]any) error { return nil }
+
+func (c *lightsClient) n() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+func colorLight(id string) bridgepro.Light {
+	var l bridgepro.Light
+	l.ID = id
+	l.Color = &bridgepro.LightColor{}
+	return l
+}
+
+func TestLightsV1_lookupsDoNotWaitOnAnInFlightProFetch(t *testing.T) {
+	// Given: a Pro whose Lights() call hangs, and a provider with a known mapping
+	gate := make(chan struct{})
+	c := &lightsClient{lights: []bridgepro.Light{colorLight("uuid-1")}, gate: gate}
+	p := newTestProvider(c)
+
+	// When: a TV poll triggers the (hanging) fetch
+	fetched := make(chan struct{})
+	go func() { defer close(fetched); _, _ = p.LightsV1() }()
+	for c.n() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+
+	// Then: id lookups (the DTLS path) return immediately while the fetch hangs
+	done := make(chan struct{})
+	go func() { defer close(done); p.UUIDForV1("1"); p.V1ForUUID("uuid-1") }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("UUIDForV1/V1ForUUID blocked behind the Pro fetch")
+	}
+	close(gate)
+	<-fetched
+}
+
+func TestLightsV1_concurrentPollsShareOneProFetch(t *testing.T) {
+	// Given: a hanging Pro fetch
+	gate := make(chan struct{})
+	c := &lightsClient{lights: []bridgepro.Light{colorLight("uuid-1")}, gate: gate}
+	p := newTestProvider(c)
+
+	// When: three TV polls arrive while the first fetch is in flight
+	var wg sync.WaitGroup
+	results := make([]map[string]any, 3)
+	for i := range results {
+		wg.Add(1)
+		go func() { defer wg.Done(); results[i], _ = p.LightsV1() }()
+	}
+	for c.n() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond) // let the other two reach the wait
+	close(gate)
+	wg.Wait()
+
+	// Then: one Pro request, every caller got the list
+	if c.n() != 1 {
+		t.Errorf("Pro Lights() calls = %d; want 1", c.n())
+	}
+	for i, r := range results {
+		if _, ok := r["1"]; !ok {
+			t.Errorf("caller %d got %v; want light 1", i, r)
+		}
+	}
+}
+
+func TestLightsV1_servesLastKnownListWhenRefreshFails(t *testing.T) {
+	// Given: one successful fetch, then the Pro goes away and the cache expires
+	c := &lightsClient{lights: []bridgepro.Light{colorLight("uuid-1")}}
+	p := newTestProvider(c)
+	if _, err := p.LightsV1(); err != nil {
+		t.Fatalf("first LightsV1: %v", err)
+	}
+	c.mu.Lock()
+	c.err = errors.New("pro unreachable")
+	c.mu.Unlock()
+	p.mu.Lock()
+	p.fetchedAt = time.Time{}
+	p.mu.Unlock()
+
+	// When
+	got, err := p.LightsV1()
+
+	// Then: the TV still gets the last known list, no error
+	if err != nil {
+		t.Fatalf("LightsV1 after Pro failure: %v", err)
+	}
+	if _, ok := got["1"]; !ok {
+		t.Errorf("got %v; want the cached light 1", got)
+	}
+	if c.n() != 2 {
+		t.Errorf("Pro Lights() calls = %d; want 2 (a refresh was attempted)", c.n())
+	}
+}
+
+func TestLightsV1_errorsWhenNeverFetched(t *testing.T) {
+	// Given: the Pro has never answered
+	c := &lightsClient{err: errors.New("pro unreachable")}
+	p := newTestProvider(c)
+
+	// When / Then
+	if _, err := p.LightsV1(); err == nil {
+		t.Fatal("expected an error with no cache to fall back on")
+	}
+}
