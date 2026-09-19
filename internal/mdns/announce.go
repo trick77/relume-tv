@@ -9,11 +9,13 @@ package mdns
 import (
 	"context"
 	"fmt"
+	"log"
 	"log/slog"
 	"net"
+	"strings"
 	"time"
 
-	"github.com/grandcat/zeroconf"
+	"github.com/hashicorp/mdns"
 	"github.com/trick77/relume-tv/internal/config"
 	"github.com/trick77/relume-tv/internal/netutil"
 )
@@ -54,49 +56,50 @@ func New(id config.Identity, advIP string, port int, log *slog.Logger) *Announce
 func (a *Announcer) Run(ctx context.Context) error {
 	spec := a.serviceSpec()
 
-	var ifaces []net.Interface
-	if iface, err := netutil.InterfaceForIP(a.advIP); err != nil {
+	var iface *net.Interface
+	if i, err := netutil.InterfaceForIP(a.advIP); err != nil {
 		a.log.Warn("mdns: interface for advertise IP not found, using all", "err", err)
 	} else {
-		ifaces = []net.Interface{*iface}
+		iface = i
 	}
 
-	// A real Gen-2 Hue bridge is IPv4-only. RegisterProxy with an explicit IPv4
-	// list announces only an A record (no AAAA) — relying on the host's interface
-	// addresses (zeroconf.Register) would also publish IPv6 AAAA records, which a
+	// A real Gen-2 Hue bridge is IPv4-only. Passing an explicit IPv4-only IPs list
+	// to NewMDNSService announces only an A record (no AAAA) — relying on the
+	// host's interface addresses would also publish IPv6 AAAA records, which a
 	// real bridge never has and which some TVs reject or mis-handle.
-	register := func() (*zeroconf.Server, error) {
-		return zeroconf.RegisterProxy(spec.instance, spec.service, spec.domain, a.port, spec.host, []string{a.advIP}, spec.txt, ifaces)
+	ip := net.ParseIP(a.advIP)
+	if ip == nil {
+		return fmt.Errorf("mdns: invalid advertise IP %q", a.advIP)
+	}
+	svc, err := mdns.NewMDNSService(spec.instance, spec.service, spec.domain, spec.host+"."+spec.domain, a.port, []net.IP{ip}, spec.txt)
+	if err != nil {
+		return fmt.Errorf("mdns service: %w", err)
 	}
 
-	server, err := register()
+	server, err := mdns.NewServer(&mdns.Config{
+		Zone:   svc,
+		Iface:  iface,
+		Logger: log.New(mdnsLogFilter{log: a.log}, "", 0),
+	})
 	if err != nil {
 		return fmt.Errorf("mdns register: %w", err)
 	}
-	// Deliberately NOT calling server.Shutdown() on exit. zeroconf's Shutdown
-	// multicasts an mDNS "goodbye" (records with TTL 0); the Ambilight TV caches
-	// the _hue._tcp answer, so a goodbye evicts relume-tv from its bridge list. With a
-	// powered-on Hue Bridge Pro on the LAN the TV then will NOT re-list relume-tv on
-	// re-discovery (it prefers the Pro/BSB003), so a plain restart would drop the
-	// bridge from the Ambilight list until the Pro is power-cycled. Letting the
-	// process exit closes the socket WITHOUT a goodbye, so the TV keeps relume-tv
-	// cached across restarts; the next start simply re-announces. This is the same
-	// "never emit a goodbye" reasoning as the no-periodic-re-register note below —
-	// the shutdown path was the remaining goodbye source.
+	// hashicorp/mdns's Shutdown() just closes the sockets — it does not
+	// multicast an mDNS "goodbye" (records with TTL 0) which would otherwise
+	// evice relume-tv from the TV's cache.
 	_ = server
 	a.log.Info("mdns: announced as hue bridge",
 		"instance", spec.instance, "host", spec.host+"."+spec.domain, "ip", a.advIP, "port", a.port, "bridgeid", a.id.BridgeID())
 
-	// Register exactly once and keep the responder alive; grandcat/zeroconf answers
+	// Register exactly once and keep the responder alive; hashicorp/mdns answers
 	// the TV's active _hue._tcp queries from here on.
 	//
-	// We deliberately do NOT periodically re-register. Re-registration goes through
-	// Server.Shutdown(), which multicasts an mDNS "goodbye" (records with TTL 0)
-	// before re-announcing. The Ambilight TV actively queries _hue._tcp (confirmed
-	// by packet capture) and caches the answer, so a goodbye evicts relume-tv from the
-	// TV's bridge list — the bridge flickers out mid-discovery and never appears.
-	// The confirmed-working ha-hue-entertainment emulator also registers exactly
-	// once. This is why relume-tv served an identical descriptor yet was never listed.
+	// We deliberately do NOT periodically re-register. The Ambilight TV actively
+	// queries _hue._tcp (confirmed by packet capture) and caches the answer, so
+	// re-registering risks the same TV-side flicker seen previously with
+	// grandcat/zeroconf's goodbye-on-Shutdown behavior. The confirmed-working
+	// ha-hue-entertainment emulator also registers exactly once. This is why
+	// relume-tv served an identical descriptor yet was never listed.
 	if a.BurstDuration > 0 {
 		// The startup discovery burst is handled by the SSDP responder. mDNS needs
 		// no burst: the TV queries actively, and a real re-announce here would only
@@ -122,4 +125,25 @@ func (a *Announcer) serviceSpec() serviceSpec {
 			"modelid=BSB002",
 		},
 	}
+}
+
+// mdnsLogFilter adapts hashicorp/mdns's *log.Logger sink onto our slog.Logger,
+// and drops "buffer size too small" unpack failures (typically
+// "NSEC.NextDomain: dns: buffer size too small"). Our announce server binds
+// the shared mDNS multicast group, so it sees — and tries to unpack — every
+// mDNS packet on the LAN, not just Hue-related ones; a known miekg/dns gap in
+// parsing certain NSEC records (e.g. another device's RFC 6762 §6.1 negative
+// response) then fires repeatedly for as long as that device keeps
+// broadcasting. It's cosmetic: the server just skips that one malformed
+// packet and keeps answering every other query fine, so it doesn't warrant
+// WARN-level noise on every occurrence. Everything else still passes through.
+type mdnsLogFilter struct{ log *slog.Logger }
+
+func (w mdnsLogFilter) Write(p []byte) (int, error) {
+	line := strings.TrimRight(string(p), "\n")
+	if strings.Contains(line, "buffer size too small") {
+		return len(p), nil
+	}
+	w.log.Warn("mdns", "msg", line)
+	return len(p), nil
 }
