@@ -2,7 +2,6 @@ package bridgepro
 
 import (
 	"crypto/tls"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -92,14 +91,5 @@ func TestParseHueTXT(t *testing.T) {
 	bid, mid = parseHueTXT([]string{"novalue", ""})
 	if bid != "" || mid != "" {
 		t.Errorf("expected empty, got bridgeid=%q modelid=%q", bid, mid)
-	}
-}
-
-func TestFirstIPv4(t *testing.T) {
-	if got := firstIPv4([]net.IP{net.ParseIP("fe80::1"), net.ParseIP("192.168.1.5")}); got != "192.168.1.5" {
-		t.Errorf("firstIPv4 = %q, want 192.168.1.5", got)
-	}
-	if got := firstIPv4([]net.IP{net.ParseIP("fe80::1")}); got != "" {
-		t.Errorf("firstIPv4 (no v4) = %q, want empty", got)
 	}
 }
