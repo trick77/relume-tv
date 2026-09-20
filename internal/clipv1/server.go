@@ -800,7 +800,10 @@ func (s *Server) handleSetLightState(w http.ResponseWriter, r *http.Request) {
 	// The gate runs before recordWriteTime/noteRESTDriving so a dropped off-zone write
 	// is a true no-op: it neither counts as Ambilight activity (which would keep the
 	// idle-off from firing) nor as REST driving.
-	if n, err := strconv.Atoi(id); err == nil && n >= 0 && n <= math.MaxUint16 && !s.AllowsMember(uint16(n)) {
+	// An id outside the 16-bit range is dropped here too: uint16(70000) is
+	// 4464, a different and possibly allowed light, so it must never reach
+	// the write path.
+	if n, err := strconv.Atoi(id); err == nil && (n < 0 || n > math.MaxUint16 || !s.AllowsMember(uint16(n))) {
 		writeJSON(w, lightStateSuccess(id, state))
 		return
 	}
@@ -1048,7 +1051,7 @@ func (s *Server) handleGroupAction(w http.ResponseWriter, r *http.Request) {
 			// Defense in depth: restrict the fan-out to the TV's requested Ambilight
 			// subset so a group action never reaches lights in other rooms. With no
 			// subset declared (AllowsMember true for all) this is the previous behaviour.
-			if n, err := strconv.Atoi(v1id); err == nil && n >= 0 && n <= math.MaxUint16 && !s.AllowsMember(uint16(n)) {
+			if n, err := strconv.Atoi(v1id); err == nil && (n < 0 || n > math.MaxUint16 || !s.AllowsMember(uint16(n))) {
 				continue
 			}
 			s.ForwardLight(v1id, action)

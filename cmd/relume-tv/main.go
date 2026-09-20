@@ -637,9 +637,9 @@ func inZoneUUIDs(m zoneMembership, uuids []string) []string {
 	out := make([]string, 0, len(uuids))
 	for _, uuid := range uuids {
 		if v1, ok := m.V1ForUUID(uuid); ok {
-			// n <= MaxUint16: an id past the 16-bit range would wrap into a
-			// different, valid-looking light id rather than being ignored.
-			if n, err := strconv.Atoi(v1); err == nil && n >= 0 && n <= math.MaxUint16 && !m.AllowsMember(uint16(n)) {
+			// An id past the 16-bit range is skipped like a non-member: it would
+			// otherwise wrap into a different, valid-looking light id.
+			if n, err := strconv.Atoi(v1); err == nil && (n < 0 || n > math.MaxUint16 || !m.AllowsMember(uint16(n))) {
 				continue
 			}
 		}
