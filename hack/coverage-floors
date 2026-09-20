@@ -1,3 +1,4 @@
-# Line-coverage floors. Hard floor, not a ratchet — see hack/coverage-gate.sh.
+# Line-coverage floor. Hard floor, not a ratchet — see hack/coverage-gate.sh.
+# No "ui" entry: the web UI is served from Go templates, with no separate
+# front-end build or vitest run to measure.
 backend=75.0
-ui=75.0

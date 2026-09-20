@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -636,7 +637,9 @@ func inZoneUUIDs(m zoneMembership, uuids []string) []string {
 	out := make([]string, 0, len(uuids))
 	for _, uuid := range uuids {
 		if v1, ok := m.V1ForUUID(uuid); ok {
-			if n, err := strconv.Atoi(v1); err == nil && !m.AllowsMember(uint16(n)) {
+			// n <= MaxUint16: an id past the 16-bit range would wrap into a
+			// different, valid-looking light id rather than being ignored.
+			if n, err := strconv.Atoi(v1); err == nil && n >= 0 && n <= math.MaxUint16 && !m.AllowsMember(uint16(n)) {
 				continue
 			}
 		}
@@ -788,6 +791,11 @@ func autoPairPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, c
 	}
 
 	var pro *config.BridgePro
+	// nilness calls this loop condition tautological because it only proves the
+	// skipTLS path, where pinProShell cannot fail. With skipTLS false it does
+	// the fingerprint fetch and returns a real error, which is exactly the case
+	// this retry loop exists for.
+	//nolint:govet // nilness: reachable error path when skipTLS is false
 	for pro == nil {
 		p, ferr := pinProShell(host, discoveryID, skipTLS, bridgepro.FetchLeafFingerprint)
 		if ferr == nil {
@@ -948,6 +956,6 @@ func outboundIP() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	return conn.LocalAddr().(*net.UDPAddr).IP.String(), nil
 }

@@ -44,6 +44,9 @@ func (c *Client) BridgeInfo() (name, bridgeID string, err error) {
 	var dl struct {
 		Data []deviceResource `json:"data"`
 	}
+	// nilerr: deliberate, see the trailing comment. The name is decoration;
+	// failing the whole lookup over it would lose the bridge id too.
+	//nolint:nilerr // name is best-effort
 	if err := c.get("/clip/v2/resource/device/"+b.Owner.RID, &dl); err != nil {
 		return "", bridgeID, nil // name is best-effort; keep the id
 	}
@@ -61,6 +64,7 @@ type LightDimming struct {
 	Brightness float64 `json:"brightness"`
 }
 
+// LightColor is a CLIP v2 light's color capability, present only on color-capable bulbs.
 type LightColor struct {
 	XY struct {
 		X float64 `json:"x"`
@@ -68,6 +72,7 @@ type LightColor struct {
 	} `json:"xy"`
 }
 
+// LightColorTemperature is a CLIP v2 light's color-temperature capability, present only on bulbs supporting CT control.
 type LightColorTemperature struct {
 	Mirek int `json:"mirek"`
 }

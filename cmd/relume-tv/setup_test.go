@@ -34,8 +34,8 @@ func pairPro(t *testing.T, cfg *config.Config) {
 
 func pairTV(t *testing.T, cfg *config.Config) {
 	t.Helper()
-	if err := cfg.AddApiUser(&config.ApiUser{Username: "u1", DeviceType: "TV#x"}); err != nil {
-		t.Fatalf("AddApiUser: %v", err)
+	if err := cfg.AddAPIUser(&config.APIUser{Username: "u1", DeviceType: "TV#x"}); err != nil {
+		t.Fatalf("AddAPIUser: %v", err)
 	}
 }
 

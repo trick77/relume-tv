@@ -44,9 +44,13 @@ func TestReceiver_decodesStreamOverDTLS(t *testing.T) {
 	var conn *dtls.Conn
 	deadline := time.Now().Add(5 * time.Second)
 	for {
+		// SA1019: pion/dtls v3 deprecates Dial and Config in favour of the
+		// options API. Migrating the test client is a behaviour change to the
+		// DTLS handshake path and belongs in its own change, not a lint pass.
+		//nolint:staticcheck // SA1019: deliberate, see above
 		c, err := dtls.Dial("udp",
 			&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port},
-			&dtls.Config{
+			&dtls.Config{ //nolint:staticcheck // SA1019
 				PSK:                  func([]byte) ([]byte, error) { return psk, nil },
 				PSKIdentityHint:      []byte(identity),
 				CipherSuites:         []dtls.CipherSuiteID{dtls.TLS_PSK_WITH_AES_128_GCM_SHA256},

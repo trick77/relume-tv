@@ -201,7 +201,10 @@ func parseGroupLights(body []byte) (v1ids []uint16, ok bool) {
 		return nil, false
 	}
 	for _, s := range g.Lights {
-		if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil && n >= 1 {
+		// Upper bound as well as lower: these ids come off the wire as strings,
+		// and without it a value past 65535 wraps silently into a valid-looking
+		// id rather than being ignored.
+		if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil && n >= 1 && n <= math.MaxUint16 {
 			v1ids = append(v1ids, uint16(n))
 		}
 	}
@@ -539,7 +542,7 @@ func (s *Server) handleDescription(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/xml")
 	w.Header().Set("Server", upnp.ServerHeaderDefault)
 	w.Header().Set("Cache-Control", "max-age=100")
-	io.WriteString(w, xml)
+	_, _ = io.WriteString(w, xml)
 }
 
 type pairingRequest struct {
@@ -564,7 +567,7 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 
 	// Idempotent: the TV polls POST /api rapidly; return the existing credentials
 	// for a devicetype instead of minting (and persisting) a new user each time.
-	if existing, ok := s.cfg.ApiUserByDeviceType(req.DeviceType); ok {
+	if existing, ok := s.cfg.APIUserByDeviceType(req.DeviceType); ok {
 		success := map[string]string{"username": existing.Username}
 		if existing.ClientKey != "" {
 			success["clientkey"] = existing.ClientKey
@@ -583,7 +586,7 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	user := &config.ApiUser{Username: username, DeviceType: req.DeviceType}
+	user := &config.APIUser{Username: username, DeviceType: req.DeviceType}
 
 	success := map[string]string{"username": username}
 	if req.GenerateClientKey {
@@ -596,7 +599,7 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 		user.ClientKey = ck
 		success["clientkey"] = ck
 	}
-	if err := s.cfg.AddApiUser(user); err != nil {
+	if err := s.cfg.AddAPIUser(user); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -635,7 +638,7 @@ func (s *Server) fullConfig() map[string]any {
 	now := time.Now().UTC()
 	const stamp = "2006-01-02T15:04:05"
 	whitelist := map[string]any{}
-	for _, u := range s.cfg.ApiUsersSnapshot() {
+	for _, u := range s.cfg.APIUsersSnapshot() {
 		whitelist[u.Username] = map[string]any{
 			"last use date": now.Format(stamp),
 			"create date":   s.started.Format(stamp),
@@ -797,7 +800,7 @@ func (s *Server) handleSetLightState(w http.ResponseWriter, r *http.Request) {
 	// The gate runs before recordWriteTime/noteRESTDriving so a dropped off-zone write
 	// is a true no-op: it neither counts as Ambilight activity (which would keep the
 	// idle-off from firing) nor as REST driving.
-	if n, err := strconv.Atoi(id); err == nil && !s.AllowsMember(uint16(n)) {
+	if n, err := strconv.Atoi(id); err == nil && n >= 0 && n <= math.MaxUint16 && !s.AllowsMember(uint16(n)) {
 		writeJSON(w, lightStateSuccess(id, state))
 		return
 	}
@@ -930,7 +933,7 @@ func groupLightIDs(lights map[string]any, entertainment bool, members map[uint16
 	ids := make([]int, 0, len(lights))
 	for id := range lights {
 		n, err := strconv.Atoi(id)
-		if err != nil {
+		if err != nil || n < 0 || n > math.MaxUint16 {
 			continue
 		}
 		if entertainment && members != nil && !members[uint16(n)] {
@@ -1045,7 +1048,7 @@ func (s *Server) handleGroupAction(w http.ResponseWriter, r *http.Request) {
 			// Defense in depth: restrict the fan-out to the TV's requested Ambilight
 			// subset so a group action never reaches lights in other rooms. With no
 			// subset declared (AllowsMember true for all) this is the previous behaviour.
-			if n, err := strconv.Atoi(v1id); err == nil && !s.AllowsMember(uint16(n)) {
+			if n, err := strconv.Atoi(v1id); err == nil && n >= 0 && n <= math.MaxUint16 && !s.AllowsMember(uint16(n)) {
 				continue
 			}
 			s.ForwardLight(v1id, action)
@@ -1173,7 +1176,7 @@ func (s *Server) handleEmptyCollection(w http.ResponseWriter, r *http.Request) {
 // authorized checks whether the {user} from the path is a paired client.
 func (s *Server) authorized(w http.ResponseWriter, r *http.Request) bool {
 	user := r.PathValue("user")
-	if !s.cfg.HasApiUser(user) {
+	if !s.cfg.HasAPIUser(user) {
 		writeError(w, 1, "/"+strings.TrimPrefix(r.URL.Path, "/api/"), "unauthorized user")
 		return false
 	}

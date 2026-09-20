@@ -104,7 +104,7 @@ func (r *Receiver) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("entertainment dtls listen on %s: %w", addr, err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	r.log.Info("entertainment receiver started (DTLS-PSK on udp :2100)", "bind", addr.String())
 
 	go func() { <-ctx.Done(); _ = listener.Close() }()
@@ -123,7 +123,7 @@ func (r *Receiver) Run(ctx context.Context) error {
 }
 
 func (r *Receiver) handle(ctx context.Context, conn net.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	remote := conn.RemoteAddr().String()
 
 	if dc, ok := conn.(*dtls.Conn); ok {

@@ -122,3 +122,33 @@ func TestServer_SSEStreamsInitialSnapshot(t *testing.T) {
 	}
 	t.Fatal("no snapshot frame received")
 }
+
+// A zero timeout means "no limit", which is the slow-loris exposure the
+// explicit values exist to close. Asserting non-zero is what stops a later
+// edit from quietly reverting them.
+func TestNewHTTPServerSetsReadTimeouts(t *testing.T) {
+	s := &Server{addr: ":0"}
+	srv := s.newHTTPServer()
+
+	if srv.ReadHeaderTimeout == 0 {
+		t.Error("ReadHeaderTimeout is 0, which means no limit")
+	}
+	if srv.ReadTimeout == 0 {
+		t.Error("ReadTimeout is 0, which means no limit")
+	}
+	if srv.IdleTimeout == 0 {
+		t.Error("IdleTimeout is 0, which means no limit")
+	}
+	if srv.ReadHeaderTimeout > srv.ReadTimeout {
+		t.Errorf("ReadHeaderTimeout %v exceeds ReadTimeout %v: headers alone could spend the whole read budget",
+			srv.ReadHeaderTimeout, srv.ReadTimeout)
+	}
+	// WriteTimeout must stay zero: /events is a long-lived SSE stream and a
+	// write deadline would cut it mid-flight.
+	if srv.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout = %v, want 0: it would truncate the SSE stream", srv.WriteTimeout)
+	}
+	if srv.Handler == nil {
+		t.Error("Handler is nil")
+	}
+}

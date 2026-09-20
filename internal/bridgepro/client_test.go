@@ -2,6 +2,8 @@ package bridgepro
 
 import (
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -156,5 +158,99 @@ func TestCertPinning_Mismatch(t *testing.T) {
 	}
 	if !errors.Is(err, ErrUnreachable) {
 		t.Fatalf("pin mismatch should be ErrUnreachable (Do fails), got %v", err)
+	}
+}
+
+// TestCertPinning_ResumedSessionStillChecksPin is the regression test for a
+// pinning bypass.
+//
+// VerifyPeerCertificate is NOT called on a resumed TLS session. With
+// InsecureSkipVerify disabling the standard chain, a client that resumed a
+// session therefore performed no certificate check at all, and the pin only
+// ever applied to the very first handshake.
+//
+// The production client has no ClientSessionCache, so it does not resume today
+// and the bypass is latent rather than live. That is exactly why this test
+// drives the tls.Config the code builds rather than going through
+// *http.Client: it pins the property (every handshake, fresh or resumed, is
+// checked) instead of the current transport settings, so enabling a session
+// cache later cannot silently reintroduce the hole.
+func TestCertPinning_ResumedSessionStillChecksPin(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	// TLS 1.2: its ticket-based resumption is what skips VerifyPeerCertificate.
+	srv.TLS = &tls.Config{MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS12}
+	srv.StartTLS()
+	defer srv.Close()
+
+	host := hostOf(t, srv.URL)
+	wrong := strings.Repeat("00", sha256.Size)
+
+	// The config the production code builds, plus a session cache so a second
+	// dial actually resumes.
+	tr, ok := newHTTPClient(wrong, false).Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("transport is not *http.Transport")
+	}
+	cfg := tr.TLSClientConfig.Clone()
+	cfg.ClientSessionCache = tls.NewLRUClientSessionCache(4)
+	cfg.ServerName = "127.0.0.1"
+
+	dial := func() error {
+		conn, err := tls.Dial("tcp", host+":443", cfg)
+		if err != nil {
+			return err
+		}
+		resumed := conn.ConnectionState().DidResume
+		_ = conn.Close()
+		if resumed {
+			t.Log("handshake resumed a cached session")
+		}
+		return nil
+	}
+
+	// First handshake: rejected by the pin, and it seeds the session cache.
+	if err := dial(); err == nil {
+		t.Fatal("first handshake: a wrong pin must be rejected")
+	}
+	// Second handshake: must also be rejected. Before VerifyConnection existed,
+	// a resumed session reached here with no certificate check at all.
+	if err := dial(); err == nil {
+		t.Fatal("second handshake: a wrong pin must be rejected on resumption too")
+	}
+}
+
+// TestCertPinning_VerifyConnectionIsSet asserts the callback exists at all.
+//
+// It is the cheap half of the check above: VerifyConnection is the only hook
+// that runs on a resumed handshake, so its absence is the bug, independent of
+// whether a given test manages to trigger resumption.
+func TestCertPinning_VerifyConnectionIsSet(t *testing.T) {
+	tr, ok := newHTTPClient(strings.Repeat("00", sha256.Size), false).Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("transport is not *http.Transport")
+	}
+	cfg := tr.TLSClientConfig
+	if cfg.VerifyPeerCertificate == nil {
+		t.Error("VerifyPeerCertificate is nil; fresh handshakes are unchecked")
+	}
+	if cfg.VerifyConnection == nil {
+		t.Fatal("VerifyConnection is nil; a resumed session would skip the pin entirely")
+	}
+	// And it must actually reject a certificate that does not match the pin.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	if err := cfg.VerifyConnection(tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{srv.Certificate()},
+	}); err == nil {
+		t.Error("VerifyConnection accepted a certificate that does not match the pin")
+	}
+
+	// With no pin configured, neither callback is installed: that is the
+	// documented skip-verify path, not an oversight.
+	tr2, _ := newHTTPClient("", true).Transport.(*http.Transport)
+	if tr2.TLSClientConfig.VerifyConnection != nil {
+		t.Error("skip-verify must not install a pin check")
 	}
 }

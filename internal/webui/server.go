@@ -142,8 +142,28 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // Run serves until ctx is cancelled. It returns a non-nil error only on a real
 // bind/serve failure (never http.ErrServerClosed), so the caller can log it
 // without taking down the headless service.
+// newHTTPServer builds the listening server. Split out of Run so the timeouts
+// are assertable: they are the whole point of not using the zero-value
+// http.Server, where every one of them means "no limit" and a client that
+// opens a connection and then stalls holds a goroutine and an fd indefinitely.
+//
+// WriteTimeout is deliberately absent: /events is a long-lived SSE stream and
+// a write deadline would cut it mid-flight.
+func (s *Server) newHTTPServer() *http.Server {
+	return &http.Server{
+		Addr:              s.addr,
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+}
+
+// Run serves until ctx is cancelled. It returns a non-nil error only on a real
+// bind/serve failure (never http.ErrServerClosed), so the caller can log it
+// without taking down the headless service.
 func (s *Server) Run(ctx context.Context) error {
-	s.http = &http.Server{Addr: s.addr, Handler: s.Handler()}
+	s.http = s.newHTTPServer()
 	go s.runSnapshotLoop(ctx)
 	errc := make(chan error, 1)
 	go func() {

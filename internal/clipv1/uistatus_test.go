@@ -9,7 +9,7 @@ import (
 )
 
 func newUIServer() *Server {
-	cfg := &config.Config{ApiUsers: map[string]*config.ApiUser{}}
+	cfg := &config.Config{APIUsers: map[string]*config.APIUser{}}
 	return New(cfg, "127.0.0.1", 80, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
