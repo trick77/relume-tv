@@ -26,12 +26,12 @@ func TestPSKForUser_decodesTheHexClientKey(t *testing.T) {
 	// Given: a paired TV whose clientkey is the 16-byte DTLS PSK in hex
 	c, _ := committedConfig(t)
 	const hexKey = "00112233445566778899aabbccddeeff"
-	if err := c.AddApiUser(&ApiUser{
+	if err := c.AddAPIUser(&APIUser{
 		Username:   "tv-user",
 		DeviceType: "Philips#TV",
 		ClientKey:  hexKey,
 	}); err != nil {
-		t.Fatalf("AddApiUser: %v", err)
+		t.Fatalf("AddAPIUser: %v", err)
 	}
 
 	// When
@@ -51,8 +51,8 @@ func TestPSKForUser_decodesTheHexClientKey(t *testing.T) {
 func TestPSKForUser_unknownUser(t *testing.T) {
 	// Given: a config with one paired user
 	c, _ := committedConfig(t)
-	if err := c.AddApiUser(&ApiUser{Username: "known", ClientKey: "aabb"}); err != nil {
-		t.Fatalf("AddApiUser: %v", err)
+	if err := c.AddAPIUser(&APIUser{Username: "known", ClientKey: "aabb"}); err != nil {
+		t.Fatalf("AddAPIUser: %v", err)
 	}
 
 	// When
@@ -68,8 +68,8 @@ func TestPSKForUser_userPairedWithoutAClientKey(t *testing.T) {
 	// Given: a client paired without generateclientkey — it can use the REST API
 	// but cannot stream entertainment
 	c, _ := committedConfig(t)
-	if err := c.AddApiUser(&ApiUser{Username: "rest-only", DeviceType: "app#x"}); err != nil {
-		t.Fatalf("AddApiUser: %v", err)
+	if err := c.AddAPIUser(&APIUser{Username: "rest-only", DeviceType: "app#x"}); err != nil {
+		t.Fatalf("AddAPIUser: %v", err)
 	}
 
 	// When
@@ -80,7 +80,7 @@ func TestPSKForUser_userPairedWithoutAClientKey(t *testing.T) {
 		t.Fatalf("PSKForUser = % x, %v, want nil, false", psk, ok)
 	}
 	// The user itself is still known.
-	if !c.HasApiUser("rest-only") {
+	if !c.HasAPIUser("rest-only") {
 		t.Error("a keyless user must still count as paired")
 	}
 }
@@ -89,8 +89,8 @@ func TestPSKForUser_nonHexClientKeyIsRejected(t *testing.T) {
 	// Given: a corrupted clientkey (hand-edited config, truncated write)
 	c, _ := committedConfig(t)
 	for _, bad := range []string{"zzzz", "abc", "not-hex-at-all"} {
-		if err := c.AddApiUser(&ApiUser{Username: "tv", ClientKey: bad}); err != nil {
-			t.Fatalf("AddApiUser: %v", err)
+		if err := c.AddAPIUser(&APIUser{Username: "tv", ClientKey: bad}); err != nil {
+			t.Fatalf("AddAPIUser: %v", err)
 		}
 
 		// When
@@ -106,8 +106,8 @@ func TestPSKForUser_nonHexClientKeyIsRejected(t *testing.T) {
 func TestPSKForUser_survivesAReload(t *testing.T) {
 	// Given: a paired user written to disk
 	c, path := committedConfig(t)
-	if err := c.AddApiUser(&ApiUser{Username: "tv", ClientKey: "0f1e2d3c"}); err != nil {
-		t.Fatalf("AddApiUser: %v", err)
+	if err := c.AddAPIUser(&APIUser{Username: "tv", ClientKey: "0f1e2d3c"}); err != nil {
+		t.Fatalf("AddAPIUser: %v", err)
 	}
 
 	// When: the daemon restarts and re-reads the file
@@ -131,8 +131,8 @@ func TestSave_writesModeAndLeavesNoTempFile(t *testing.T) {
 	c, path := committedConfig(t)
 
 	// When
-	if err := c.AddApiUser(&ApiUser{Username: "tv", DeviceType: "Philips#TV"}); err != nil {
-		t.Fatalf("AddApiUser: %v", err)
+	if err := c.AddAPIUser(&APIUser{Username: "tv", DeviceType: "Philips#TV"}); err != nil {
+		t.Fatalf("AddAPIUser: %v", err)
 	}
 
 	// Then: the config holds pairing secrets, so it must not be world-readable
@@ -158,8 +158,8 @@ func TestSave_isSkippedEntirelyBeforeCommit(t *testing.T) {
 	}
 
 	// When: setup-time mutations happen
-	if err := c.AddApiUser(&ApiUser{Username: "tv", ClientKey: "aabb"}); err != nil {
-		t.Fatalf("AddApiUser: %v", err)
+	if err := c.AddAPIUser(&APIUser{Username: "tv", ClientKey: "aabb"}); err != nil {
+		t.Fatalf("AddAPIUser: %v", err)
 	}
 	if err := c.SaveEntConfigID("ent-1"); err != nil {
 		t.Fatalf("SaveEntConfigID: %v", err)
@@ -169,7 +169,7 @@ func TestSave_isSkippedEntirelyBeforeCommit(t *testing.T) {
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Errorf("config written before Commit (stat err = %v)", statErr)
 	}
-	if !c.HasApiUser("tv") {
+	if !c.HasAPIUser("tv") {
 		t.Error("the in-memory user is missing")
 	}
 	if c.LoadEntConfigID() != "ent-1" {
@@ -184,7 +184,7 @@ func TestSave_isSkippedEntirelyBeforeCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load 2: %v", err)
 	}
-	if !c2.HasApiUser("tv") || c2.LoadEntConfigID() != "ent-1" {
+	if !c2.HasAPIUser("tv") || c2.LoadEntConfigID() != "ent-1" {
 		t.Error("Commit did not flush the pending setup state")
 	}
 }
@@ -218,7 +218,7 @@ func TestSave_surfacesAWriteFailure(t *testing.T) {
 	}
 
 	// When
-	err := c.AddApiUser(&ApiUser{Username: "tv", DeviceType: "Philips#TV"})
+	err := c.AddAPIUser(&APIUser{Username: "tv", DeviceType: "Philips#TV"})
 
 	// Then: a failed persist must be reported, not silently swallowed — otherwise
 	// the pairing looks successful but is lost on restart
@@ -242,7 +242,7 @@ func TestSave_failedRenameLeavesNoTempFile(t *testing.T) {
 	}
 
 	// When
-	err := c.AddApiUser(&ApiUser{Username: "tv"})
+	err := c.AddAPIUser(&APIUser{Username: "tv"})
 
 	// Then: the error surfaces AND the half-written temp file is cleaned up, so
 	// a retry does not trip over its own garbage
@@ -342,7 +342,9 @@ func TestGenerateSerial_is12HexCharsAndRandom(t *testing.T) {
 			t.Fatalf("serial %q has length %d, want 12", s, len(s))
 		}
 		for _, r := range s {
-			if !('0' <= r && r <= '9') && !('a' <= r && r <= 'f') {
+			isDigit := '0' <= r && r <= '9'
+			isLowerHex := 'a' <= r && r <= 'f'
+			if !isDigit && !isLowerHex {
 				t.Fatalf("serial %q contains a non-lowercase-hex rune %q", s, r)
 			}
 		}

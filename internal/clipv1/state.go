@@ -54,7 +54,7 @@ func (a *activityTracker) recordGroupActionWrite() {
 // recordLightRead accumulates one GET /lights/{id} poll for the summary. It
 // deliberately does NOT touch lightsTouched: reads must not skew per_light_hz,
 // which stays the control-write rate.
-func (a *activityTracker) recordLightRead(id string) {
+func (a *activityTracker) recordLightRead(_ string) {
 	a.mu.Lock()
 	a.lightReads++
 	a.mu.Unlock()

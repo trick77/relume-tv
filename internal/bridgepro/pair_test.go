@@ -170,6 +170,9 @@ func TestHTTPClientFor_pinnedClientRejectsTheWrongCertificate(t *testing.T) {
 	client := HTTPClientFor(&config.BridgePro{CertSHA256: strings.Repeat("00", 32)})
 
 	// When
+	// bodyclose: the request is expected to fail at the TLS handshake, so
+	// there is no response whose body could be closed.
+	//nolint:bodyclose // the pin must reject this before a body exists
 	_, err := client.Get(srv.URL)
 
 	// Then: pinning is the only chain check there is, so it must actually bite

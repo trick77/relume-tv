@@ -85,6 +85,9 @@ func Encode(f *Frame) []byte {
 }
 
 func appendU16(b []byte, v uint16) []byte {
+	// G115: this IS the big-endian split, not a lossy narrowing. Each byte()
+	// deliberately takes one half of the 16-bit value.
+	//nolint:gosec // G115
 	return append(b, byte(v>>8), byte(v))
 }
 

@@ -62,7 +62,10 @@ func smoothComponent(cur, tgt uint16, alpha float64) uint16 {
 	if d <= snapColorDelta && d >= -snapColorDelta {
 		return tgt
 	}
-	return uint16(int(cur) + int(math.Round(alpha*float64(d))))
+	// G115: alpha comes only from alphaForTau, which returns 1-exp(-x) and is
+	// therefore in (0,1], so the result stays between cur and tgt. Both are
+	// uint16, so it cannot leave the range.
+	return uint16(int(cur) + int(math.Round(alpha*float64(d)))) //nolint:gosec // G115
 }
 
 // smoothToward eases current toward target on all three colour components (A/B/C —
@@ -675,6 +678,9 @@ func (s *ProStreamer) buildFrameLocked() *huestream.Frame {
 	if s.st.current == nil {
 		s.st.current = make(map[uint8]huestream.Channel, len(s.st.latest))
 	}
+	// Widened to int only so sort.Ints can order them, then narrowed straight
+	// back. Every id came out of a map[uint8], so the round trip is lossless
+	// and the uint8() conversions below cannot overflow.
 	ids := make([]int, 0, len(s.st.latest))
 	for id := range s.st.latest {
 		ids = append(ids, int(id))
@@ -682,12 +688,12 @@ func (s *ProStreamer) buildFrameLocked() *huestream.Frame {
 	sort.Ints(ids)
 	channels := make([]huestream.Channel, 0, len(ids))
 	for _, id := range ids {
-		target := s.st.latest[uint8(id)]
-		next := target // first sight of a channel: snap, don't fade up from black
-		if cur, ok := s.st.current[uint8(id)]; ok {
+		target := s.st.latest[uint8(id)]            //nolint:gosec // G115: id round-trips from map[uint8]
+		next := target                              // first sight of a channel: snap, don't fade up from black
+		if cur, ok := s.st.current[uint8(id)]; ok { //nolint:gosec // G115
 			next = smoothToward(cur, target, s.alpha())
 		}
-		s.st.current[uint8(id)] = next
+		s.st.current[uint8(id)] = next //nolint:gosec // G115
 		channels = append(channels, next)
 	}
 	s.st.seq++
@@ -757,7 +763,8 @@ func (s *ProStreamer) ensureConfig(pro ProClient) (id string, remap map[uint16]u
 	lm := translate.LightsV1(lights)
 	uuidToV1 := make(map[string]uint16, len(lm.V1ToUUID))
 	for v1str, uuid := range lm.V1ToUUID {
-		if n, perr := strconv.Atoi(v1str); perr == nil {
+		// Bounded: an out-of-range id would wrap into a different light.
+		if n, perr := strconv.Atoi(v1str); perr == nil && n >= 0 && n <= math.MaxUint16 {
 			uuidToV1[uuid] = uint16(n)
 		}
 	}
@@ -866,7 +873,6 @@ func (s *ProStreamer) ensureConfig(pro ProClient) (id string, remap map[uint16]u
 			// REST fallback and re-lists on backoff.
 			return "", nil, false, 0, fmt.Errorf("get candidate config %s: %w", id, gerr)
 		}
-		id = ""
 	}
 
 	// Create a fresh config and persist its id for reuse next stream/restart.
@@ -945,6 +951,12 @@ func remapFromConfig(full *bridgepro.EntertainmentConfigFull, svcToV1 map[string
 			continue
 		}
 		if v1, ok := svcToV1[ch.Members[0].Service.RID]; ok {
+			// ChannelID arrives as JSON from the bridge. A value outside the
+			// 8-bit range would wrap into a different, valid-looking channel,
+			// so it is skipped rather than silently remapped.
+			if ch.ChannelID < 0 || ch.ChannelID > math.MaxUint8 {
+				continue
+			}
 			remap[v1] = uint8(ch.ChannelID)
 		}
 	}

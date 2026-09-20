@@ -2,6 +2,8 @@ package bridgepro
 
 import (
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -156,5 +158,39 @@ func TestCertPinning_Mismatch(t *testing.T) {
 	}
 	if !errors.Is(err, ErrUnreachable) {
 		t.Fatalf("pin mismatch should be ErrUnreachable (Do fails), got %v", err)
+	}
+}
+
+// TestCertPinning_VerifyConnectionIsSet asserts the callback exists at all.
+//
+// It is the cheap half of the check above: VerifyConnection is the only hook
+// that runs on a resumed handshake, so its absence is the bug, independent of
+// whether a given test manages to trigger resumption.
+func TestCertPinning_VerifyConnectionIsSet(t *testing.T) {
+	tr, ok := newHTTPClient(strings.Repeat("00", sha256.Size), false).Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("transport is not *http.Transport")
+	}
+	cfg := tr.TLSClientConfig
+	if cfg.VerifyPeerCertificate == nil {
+		t.Error("VerifyPeerCertificate is nil; fresh handshakes are unchecked")
+	}
+	if cfg.VerifyConnection == nil {
+		t.Fatal("VerifyConnection is nil; a resumed session would skip the pin entirely")
+	}
+	// And it must actually reject a certificate that does not match the pin.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	if err := cfg.VerifyConnection(tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{srv.Certificate()},
+	}); err == nil {
+		t.Error("VerifyConnection accepted a certificate that does not match the pin")
+	}
+
+	// With no pin configured, neither callback is installed: that is the
+	// documented skip-verify path, not an oversight.
+	tr2, _ := newHTTPClient("", true).Transport.(*http.Transport)
+	if tr2.TLSClientConfig.VerifyConnection != nil {
+		t.Error("skip-verify must not install a pin check")
 	}
 }

@@ -53,6 +53,9 @@ func decodeCLIPErrors(raw []byte) error {
 			Description string `json:"description"`
 		} `json:"errors"`
 	}
+	// nilerr: deliberate. A body that will not unmarshal carries no domain
+	// error, which is what the doc comment above means by lenient.
+	//nolint:nilerr // a malformed body is not a domain error
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil
 	}
@@ -66,11 +69,10 @@ func decodeCLIPErrors(raw []byte) error {
 	return nil
 }
 
-// Client talks to a Hue Bridge Pro.
 // ProController is the Pro-facing read + control surface that the light provider
-// and resilience code depend on, defined here (the producer package) so callers can
-// program to the interface and inject fakes in tests without a live Hue Bridge Pro.
-// *Client is the production implementation.
+// and resilience code depend on, defined here so callers can program to the
+// interface and inject fakes in tests without a live Hue Bridge Pro. *Client is
+// the production implementation.
 type ProController interface {
 	// Lights returns the Pro's lights (CLIP v2, value types).
 	Lights() ([]Light, error)
@@ -80,6 +82,7 @@ type ProController interface {
 
 var _ ProController = (*Client)(nil)
 
+// Client is the production implementation of ProController, communicating over HTTPS:443.
 type Client struct {
 	host       string
 	appKey     string
@@ -112,7 +115,7 @@ func newHTTPClient(certSHA256 string, skipVerify bool) *http.Client {
 	}
 	if !skipVerify && certSHA256 != "" {
 		want := certSHA256
-		tlsCfg.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		pin := func(rawCerts [][]byte) error {
 			if len(rawCerts) == 0 {
 				return fmt.Errorf("no certificate from the bridge")
 			}
@@ -122,6 +125,22 @@ func newHTTPClient(certSHA256 string, skipVerify bool) *http.Client {
 				return fmt.Errorf("certificate fingerprint does not match (expected %s, got %s)", want, got)
 			}
 			return nil
+		}
+		tlsCfg.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			return pin(rawCerts)
+		}
+		// VerifyConnection as well, and not instead: VerifyPeerCertificate is
+		// NOT called on a resumed session, so with InsecureSkipVerify disabling
+		// the standard chain, every resumed connection after the first
+		// handshake would skip the pin entirely. VerifyConnection runs on
+		// resumption too, and cs.PeerCertificates carries the certificates the
+		// original handshake presented.
+		tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
+			raw := make([][]byte, 0, len(cs.PeerCertificates))
+			for _, c := range cs.PeerCertificates {
+				raw = append(raw, c.Raw)
+			}
+			return pin(raw)
 		}
 	}
 	return &http.Client{
@@ -141,7 +160,7 @@ func FetchLeafFingerprint(host string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("tls connection to %s: %w", host, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	certs := conn.ConnectionState().PeerCertificates
 	if len(certs) == 0 {
 		return "", fmt.Errorf("no certificate received")
@@ -168,7 +187,7 @@ func Pair(httpClient *http.Client, host, deviceType string) (*PairResult, error)
 	if err != nil {
 		return nil, fmt.Errorf("pairing request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var out []struct {
 		Success *struct {
@@ -202,7 +221,7 @@ func (c *Client) get(path string, v any) error {
 	if err != nil {
 		return fmt.Errorf("GET %s: %w", path, errors.Join(err, ErrUnreachable))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusServiceUnavailable {
 		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("GET %s: status %d: %s: %w", path, resp.StatusCode, string(b), ErrQueueFull)
@@ -226,7 +245,7 @@ func (c *Client) post(path string, payload any) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("POST %s: %w", path, errors.Join(err, ErrUnreachable))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode == http.StatusServiceUnavailable {
 		return "", fmt.Errorf("POST %s: status %d: %s: %w", path, resp.StatusCode, string(raw), ErrQueueFull)
@@ -266,7 +285,7 @@ func (c *Client) put(path string, payload any) error {
 	if err != nil {
 		return fmt.Errorf("PUT %s: %w", path, errors.Join(err, ErrUnreachable))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode == http.StatusServiceUnavailable {
@@ -291,7 +310,7 @@ func (c *Client) del(path string) error {
 	if err != nil {
 		return fmt.Errorf("DELETE %s: %w", path, errors.Join(err, ErrUnreachable))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode == http.StatusServiceUnavailable {
 		return fmt.Errorf("DELETE %s: status %d: %s: %w", path, resp.StatusCode, string(raw), ErrQueueFull)

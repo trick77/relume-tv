@@ -67,6 +67,10 @@ func (u *uiSource) CoalesceRate() int { return u.proStats.coalesces.FPS() }
 
 // ForwardErrors is the cumulative count of failed REST writes to the Pro since
 // start — the real failure signal (down Pro / 503 overflow).
+// G115: a monotonic error counter. Reaching 2^63 would take longer than the
+// hardware exists.
+//
+//nolint:gosec // G115
 func (u *uiSource) ForwardErrors() int { return int(u.proStats.fwdErrs.Load()) }
 
 // LastForwardErr is the time of the most recent failed REST write (zero if none),

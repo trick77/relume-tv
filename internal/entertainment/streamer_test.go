@@ -24,7 +24,7 @@ type fakeConn struct {
 	onClose func()
 }
 
-func (c *fakeConn) Read(b []byte) (int, error)  { return 0, io.EOF }
+func (c *fakeConn) Read(_ []byte) (int, error)  { return 0, io.EOF }
 func (c *fakeConn) Write(b []byte) (int, error) { return len(b), nil }
 func (c *fakeConn) Close() error {
 	c.closes.Add(1)
@@ -68,7 +68,7 @@ func (s *stubPro) EntertainmentServices() ([]bridgepro.EntertainmentService, err
 func (s *stubPro) EntertainmentConfigs() ([]bridgepro.EntertainmentConfig, error) {
 	return s.configs, nil
 }
-func (s *stubPro) CreateEntertainmentConfig(name string, members []bridgepro.ConfigMember) (string, error) {
+func (s *stubPro) CreateEntertainmentConfig(_ string, members []bridgepro.ConfigMember) (string, error) {
 	if s.createErr != nil {
 		return "", s.createErr
 	}
@@ -1047,5 +1047,45 @@ func TestMedianFilter_disabledPassesVerbatim(t *testing.T) {
 	}
 	if s.st.history != nil {
 		t.Fatal("a disabled filter must not allocate history")
+	}
+}
+
+// A channel id outside the 8-bit range must be dropped, not narrowed.
+// uint8(256) is 0, which is a different but perfectly valid channel, so a
+// silent conversion would drive the wrong lamp rather than fail visibly.
+func TestRemapFromConfig_RejectsOutOfRangeChannelID(t *testing.T) {
+	svcToV1 := map[string]uint16{"svc-a": 7, "svc-b": 8, "svc-c": 9}
+
+	chanWith := func(id int, rid string) bridgepro.EntChannel {
+		ch := bridgepro.EntChannel{ChannelID: id}
+		ch.Members = append(ch.Members, struct {
+			Service struct {
+				RID   string `json:"rid"`
+				RType string `json:"rtype"`
+			} `json:"service"`
+			Index int `json:"index"`
+		}{})
+		ch.Members[0].Service.RID = rid
+		return ch
+	}
+
+	full := &bridgepro.EntertainmentConfigFull{
+		Channels: []bridgepro.EntChannel{
+			chanWith(3, "svc-a"),   // in range: kept
+			chanWith(256, "svc-b"), // would wrap to 0: dropped
+			chanWith(-1, "svc-c"),  // negative: dropped
+		},
+	}
+
+	remap := remapFromConfig(full, svcToV1)
+
+	if got, ok := remap[7]; !ok || got != 3 {
+		t.Errorf("v1 7 = (%d, %v), want (3, true)", got, ok)
+	}
+	if got, ok := remap[8]; ok {
+		t.Errorf("v1 8 mapped to channel %d; 256 must be dropped, not wrapped to 0", got)
+	}
+	if got, ok := remap[9]; ok {
+		t.Errorf("v1 9 mapped to channel %d; a negative id must be dropped", got)
 	}
 }

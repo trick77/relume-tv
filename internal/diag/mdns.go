@@ -5,6 +5,7 @@ package diag
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -44,7 +45,7 @@ func (o *MDNSObserver) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("mdns listen: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	o.log.Info("mdns observer started (listening for _hue._tcp queries)")
 
 	buf := make([]byte, 65536)
@@ -57,7 +58,8 @@ func (o *MDNSObserver) Run(ctx context.Context) error {
 		_ = conn.SetReadDeadline(deadline())
 		n, src, rerr := conn.ReadFromUDP(buf)
 		if rerr != nil {
-			if ne, ok := rerr.(net.Error); ok && ne.Timeout() {
+			var ne net.Error
+			if errors.As(rerr, &ne) && ne.Timeout() {
 				continue
 			}
 			continue
@@ -139,7 +141,7 @@ func readName(msg []byte, off int) (string, int, bool) {
 			if !jumped {
 				next = off + 2
 			}
-			off = int(l&0x3F)<<8 | int(msg[off+1])
+			off = (l&0x3F)<<8 | int(msg[off+1])
 			jumped = true
 		default:
 			if off+1+l > len(msg) {

@@ -49,8 +49,8 @@ func (i Identity) UUID() string {
 	return "2f402f80-da50-11e1-9b23-" + i.Serial
 }
 
-// ApiUser is a client paired by the TV.
-type ApiUser struct {
+// APIUser is a client paired by the TV.
+type APIUser struct {
 	Username   string `json:"username"`
 	DeviceType string `json:"deviceType"`
 	// ClientKey is the DTLS PSK for the entertainment path (only with generateclientkey).
@@ -108,7 +108,7 @@ type Config struct {
 	// SchemaVersion is the on-disk layout version. See CurrentSchemaVersion.
 	SchemaVersion int                 `json:"schemaVersion"`
 	Identity      Identity            `json:"identity"`
-	ApiUsers      map[string]*ApiUser `json:"apiUsers"`
+	APIUsers      map[string]*APIUser `json:"apiUsers"`
 	Pro           *BridgePro          `json:"bridgePro,omitempty"`
 	// EntConfigID is the id of relume-tv's own entertainment_configuration on the Pro,
 	// persisted so the entertainment streamer can reuse it across restarts instead of
@@ -144,13 +144,15 @@ type Config struct {
 // re-pairs against a bridge that did not change identity under it. A random
 // serial is used only when no MAC can be found.
 func Load(path string) (*Config, error) {
-	c := &Config{path: path, ApiUsers: map[string]*ApiUser{}}
+	c := &Config{path: path, APIUsers: map[string]*APIUser{}}
 
 	// Clean up an orphaned temp file from a previous crashed/failed save so it never
 	// lingers as garbage next to the real config. Best-effort.
 	_ = os.Remove(path + ".tmp")
 
-	data, err := os.ReadFile(path)
+	// G304: path is the config location, chosen by the operator via flag or
+	// the default under the user's home. No request data reaches it.
+	data, err := os.ReadFile(path) //nolint:gosec // G304
 	switch {
 	case os.IsNotExist(err):
 		serial, gerr := deriveSerial()
@@ -161,7 +163,7 @@ func Load(path string) (*Config, error) {
 		c.Identity = Identity{Serial: serial}
 		// Deferred persistence: do NOT write the file here. It is created once by
 		// Commit() when the setup completes (TV data flowing). persist stays false so
-		// SetPro/AddApiUser/SaveEntConfigID only update memory until then.
+		// SetPro/AddAPIUser/SaveEntConfigID only update memory until then.
 		c.firstRun = true
 		return c, nil
 	case err != nil:
@@ -174,8 +176,8 @@ func Load(path string) (*Config, error) {
 	if c.SchemaVersion > CurrentSchemaVersion {
 		return nil, fmt.Errorf("config schema version %d is newer than this build supports (%d); upgrade relume-tv", c.SchemaVersion, CurrentSchemaVersion)
 	}
-	if c.ApiUsers == nil {
-		c.ApiUsers = map[string]*ApiUser{}
+	if c.APIUsers == nil {
+		c.APIUsers = map[string]*APIUser{}
 	}
 	c.path = path
 	// The file already existed: this is a committed install. Persist runtime updates.
@@ -211,11 +213,11 @@ func (c *Config) FirstRun() bool {
 	return c.firstRun
 }
 
-// AddApiUser creates a new paired TV client and persists it.
-func (c *Config) AddApiUser(u *ApiUser) error {
+// AddAPIUser creates a new paired TV client and persists it.
+func (c *Config) AddAPIUser(u *APIUser) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.ApiUsers[u.Username] = u
+	c.APIUsers[u.Username] = u
 	return c.save()
 }
 
@@ -224,22 +226,22 @@ func (c *Config) AddApiUser(u *ApiUser) error {
 func (c *Config) PairedDeviceTypes() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := make([]string, 0, len(c.ApiUsers))
-	for _, u := range c.ApiUsers {
+	out := make([]string, 0, len(c.APIUsers))
+	for _, u := range c.APIUsers {
 		out = append(out, u.DeviceType)
 	}
 	sort.Strings(out)
 	return out
 }
 
-// ApiUsersSnapshot returns the paired clients (username + devicetype, no clientkey),
+// APIUsersSnapshot returns the paired clients (username + devicetype, no clientkey),
 // sorted by username — for the whitelist in the authenticated /config.
-func (c *Config) ApiUsersSnapshot() []ApiUser {
+func (c *Config) APIUsersSnapshot() []APIUser {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := make([]ApiUser, 0, len(c.ApiUsers))
-	for _, u := range c.ApiUsers {
-		out = append(out, ApiUser{Username: u.Username, DeviceType: u.DeviceType})
+	out := make([]APIUser, 0, len(c.APIUsers))
+	for _, u := range c.APIUsers {
+		out = append(out, APIUser{Username: u.Username, DeviceType: u.DeviceType})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Username < out[j].Username })
 	return out
@@ -249,7 +251,7 @@ func (c *Config) ApiUsersSnapshot() []ApiUser {
 // paired client identity (username), for the entertainment DTLS handshake.
 func (c *Config) PSKForUser(username string) ([]byte, bool) {
 	c.mu.Lock()
-	u, ok := c.ApiUsers[username]
+	u, ok := c.APIUsers[username]
 	c.mu.Unlock()
 	if !ok || u.ClientKey == "" {
 		return nil, false
@@ -261,20 +263,20 @@ func (c *Config) PSKForUser(username string) ([]byte, bool) {
 	return key, true
 }
 
-// HasApiUser checks whether a username is known (paired).
-func (c *Config) HasApiUser(username string) bool {
+// HasAPIUser checks whether a username is known (paired).
+func (c *Config) HasAPIUser(username string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, ok := c.ApiUsers[username]
+	_, ok := c.APIUsers[username]
 	return ok
 }
 
-// ApiUserByDeviceType returns the first paired user with the given devicetype, if
+// APIUserByDeviceType returns the first paired user with the given devicetype, if
 // any. Used to make pairing idempotent (the TV polls POST /api repeatedly).
-func (c *Config) ApiUserByDeviceType(deviceType string) (*ApiUser, bool) {
+func (c *Config) APIUserByDeviceType(deviceType string) (*APIUser, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, u := range c.ApiUsers {
+	for _, u := range c.APIUsers {
 		if u.DeviceType == deviceType {
 			return u, true
 		}
@@ -330,7 +332,7 @@ func (c *Config) save() error {
 		return nil
 	}
 	// Deferred persistence: during a fresh setup nothing is written to disk until
-	// Commit() flips persist true. So SetPro/AddApiUser/SaveEntConfigID called mid-setup
+	// Commit() flips persist true. So SetPro/AddAPIUser/SaveEntConfigID called mid-setup
 	// only mutate the in-memory config; the file appears in one atomic write at Commit().
 	if !c.persist {
 		return nil
@@ -342,8 +344,11 @@ func (c *Config) save() error {
 	if err != nil {
 		return fmt.Errorf("serialize config: %w", err)
 	}
+	// 0750, matching the 0600 on the file itself: the config carries the Hue
+	// app key and the DTLS pre-shared key, so the directory has no reason to
+	// be world-readable either.
 	dir := filepath.Dir(c.path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	tmp := c.path + ".tmp"
@@ -360,16 +365,17 @@ func (c *Config) save() error {
 // writeFileSync writes data to path (0600) and fsyncs it before returning, so the
 // bytes are on disk before the caller renames it into place.
 func writeFileSync(path string, data []byte) error {
+	//nolint:gosec // G304: operator-chosen config path, as in Load
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
 	if _, werr := f.Write(data); werr != nil {
-		f.Close()
+		_ = f.Close()
 		return werr
 	}
 	if serr := f.Sync(); serr != nil {
-		f.Close()
+		_ = f.Close()
 		return serr
 	}
 	return f.Close()
@@ -379,11 +385,12 @@ func writeFileSync(path string, data []byte) error {
 // directory is non-fatal on platforms that don't support it; the rename itself already
 // succeeded, so a best-effort sync is enough.
 func fsyncDir(dir string) error {
+	//nolint:gosec // G304: the config directory, from the operator-chosen path
 	d, err := os.Open(dir)
 	if err != nil {
 		return nil //nolint:nilerr // directory fsync is best-effort
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	_ = d.Sync()
 	return nil
 }

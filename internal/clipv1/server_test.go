@@ -1469,3 +1469,34 @@ func TestGroupLightIDs_noSubsetYetListsEveryLight(t *testing.T) {
 		t.Errorf("single-light location = %v, want centred", got["7"])
 	}
 }
+
+// An id outside the 16-bit range must be dropped by the member gate, not let
+// through. The trap is polarity: this is a DENY guard, so ANDing a range check
+// onto it makes an out-of-range id skip the drop and reach the write path,
+// which is the opposite of what bounding the value is for.
+//
+// 70000 narrows to 4464 (70000 - 65536). 4464 is deliberately the allowed
+// member here, so a wrapped id would look permitted — the silent "drives the
+// wrong lamp" outcome, rather than a visible failure.
+func TestLastActivity_doesNotAdvanceOnOutOfRangeWrite(t *testing.T) {
+	s, ts := newTestServer(t)
+	s.SetLightProvider(&fanoutProvider{lights: map[string]any{"4464": map[string]any{}}})
+	user := pairTV(t, ts)
+
+	// Given: the TV's Ambilight zone is exactly the light 70000 would wrap onto.
+	s.setRequestedMembers([]uint16{4464})
+
+	// When: the TV writes to an id past the 16-bit range.
+	mustPut(t, ts.URL+"/api/"+user+"/lights/70000/state", `{"on":true,"bri":254}`).Body.Close()
+
+	// Then: it was dropped, so it never registered as activity.
+	if !s.LastActivity().IsZero() {
+		t.Fatalf("LastActivity advanced on an out-of-range write = %v, want zero", s.LastActivity())
+	}
+
+	// And the in-range member still works, so the guard did not over-reject.
+	mustPut(t, ts.URL+"/api/"+user+"/lights/4464/state", `{"on":true,"bri":254}`).Body.Close()
+	if s.LastActivity().IsZero() {
+		t.Fatal("LastActivity did not advance on an in-zone write; the guard rejects too much")
+	}
+}

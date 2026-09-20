@@ -172,8 +172,8 @@ func TestSave_IsNoOpUntilCommit(t *testing.T) {
 	if err := c.SetPro(&BridgePro{Host: "10.0.0.5", AppKey: "k"}); err != nil {
 		t.Fatalf("SetPro: %v", err)
 	}
-	if err := c.AddApiUser(&ApiUser{Username: "u1", DeviceType: "TV#x"}); err != nil {
-		t.Fatalf("AddApiUser: %v", err)
+	if err := c.AddAPIUser(&APIUser{Username: "u1", DeviceType: "TV#x"}); err != nil {
+		t.Fatalf("AddAPIUser: %v", err)
 	}
 
 	// Then: nothing is on disk yet — the writes only updated memory.
@@ -200,17 +200,17 @@ func TestSave_IsNoOpUntilCommit(t *testing.T) {
 	if p := reloaded.GetPro(); p == nil || p.Host != "10.0.0.5" {
 		t.Errorf("Pro not persisted by Commit: %+v", p)
 	}
-	if !reloaded.HasApiUser("u1") {
-		t.Error("ApiUser not persisted by Commit")
+	if !reloaded.HasAPIUser("u1") {
+		t.Error("APIUser not persisted by Commit")
 	}
 
 	// And: runtime saves after commit behave normally (write through).
-	if err := reloaded.AddApiUser(&ApiUser{Username: "u2", DeviceType: "TV#y"}); err != nil {
-		t.Fatalf("AddApiUser post-commit: %v", err)
+	if err := reloaded.AddAPIUser(&APIUser{Username: "u2", DeviceType: "TV#y"}); err != nil {
+		t.Fatalf("AddAPIUser post-commit: %v", err)
 	}
 	again, _ := Load(path)
-	if !again.HasApiUser("u2") {
-		t.Error("post-commit AddApiUser did not persist")
+	if !again.HasAPIUser("u2") {
+		t.Error("post-commit AddAPIUser did not persist")
 	}
 }
 
@@ -307,14 +307,14 @@ func TestSetPro_DoesNotClobberEntConfigID(t *testing.T) {
 	}
 }
 
-func TestAddApiUser_Persists(t *testing.T) {
+func TestAddAPIUser_Persists(t *testing.T) {
 	// Given
 	path := filepath.Join(t.TempDir(), "relume-tv.json")
 	c, _ := Load(path)
 
 	// When (Commit so deferred persistence writes it to disk)
-	if err := c.AddApiUser(&ApiUser{Username: "abc123", DeviceType: "TV#x"}); err != nil {
-		t.Fatalf("AddApiUser: %v", err)
+	if err := c.AddAPIUser(&APIUser{Username: "abc123", DeviceType: "TV#x"}); err != nil {
+		t.Fatalf("AddAPIUser: %v", err)
 	}
 	if err := c.Commit(); err != nil {
 		t.Fatalf("Commit: %v", err)
@@ -322,7 +322,7 @@ func TestAddApiUser_Persists(t *testing.T) {
 
 	// Then
 	reloaded, _ := Load(path)
-	if !reloaded.HasApiUser("abc123") {
-		t.Error("ApiUser not persisted")
+	if !reloaded.HasAPIUser("abc123") {
+		t.Error("APIUser not persisted")
 	}
 }

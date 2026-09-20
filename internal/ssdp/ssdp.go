@@ -6,6 +6,7 @@ package ssdp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -62,7 +63,7 @@ func (r *Responder) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("ssdp multicast listen: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = conn.SetReadBuffer(1 << 20)
 
 	go r.notifyLoop(ctx, conn, group)
@@ -82,7 +83,8 @@ func (r *Responder) Run(ctx context.Context) error {
 		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 		n, src, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
 				continue
 			}
 			r.log.Warn("ssdp read", "err", err)
