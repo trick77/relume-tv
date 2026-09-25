@@ -19,6 +19,7 @@ coverage.out
 
 # agent session data + worktrees
 .claude/
+.agents/
 
 # macOS
 .DS_Store
