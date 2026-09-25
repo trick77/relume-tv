@@ -26,6 +26,3 @@ coverage.out
 
 .playwright-mcp/
 coverage/
-
-# Local git worktrees
-.agents/worktrees/
