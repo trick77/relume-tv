@@ -53,10 +53,21 @@ All repo content (docs, code comments, logs) is English.
   the 65OLED806 instantly lists relume-tv and sends `POST /api` (`devicetype=65OLED806/12`). Open
   product problem: relume-tv must win over a powered-on Pro (the TV de-dupes/prefers BSB003) — NOT yet
   solved. (relume-tv proxies control TO the Pro, so Pro-off only validates discovery/pairing.)
-- mDNS announce MUST register exactly once and NEVER re-register/re-announce via
-  `Server.Shutdown()`: grandcat/zeroconf's Shutdown multicasts an mDNS goodbye (TTL 0) that evicts
-  relume-tv from the TV's cache → bridge flickers out of the Ambilight list. This (not the descriptor)
-  was the real discovery bug; fixed in `internal/mdns/announce.go`.
+- mDNS announce MUST register exactly once and NEVER re-register/re-announce needlessly: with
+  grandcat/zeroconf, `Server.Shutdown()` multicast an mDNS goodbye (TTL 0) that evicted relume-tv from
+  the TV's cache → bridge flickers out of the Ambilight list. This (not the descriptor) was the real
+  discovery bug; fixed in `internal/mdns/announce.go`. Now on hashicorp/mdns, whose `Shutdown()` does
+  NOT send a goodbye — but keep the "register once, never re-announce" discipline anyway.
+- mDNS **discovery** (browsing for the Bridge Pro, `internal/bridgepro/discover.go`) switched from
+  grandcat/zeroconf to hashicorp/mdns: behind an avahi-reflector, zeroconf's `Browse()` only ever
+  surfaced whatever SRV/TXT/A came bundled with the initial PTR answer and never issued its own
+  follow-up per-instance queries, so it silently returned zero bridges whenever the reflector didn't
+  forward that bundling (confirmed via packet capture: a Python client that does the follow-up
+  SRV+TXT+A+AAAA queries per instance resolves fine over the same reflector). hashicorp/mdns's
+  client explicitly re-queries incomplete instances. NOTE: its follow-up query is typed PTR (not
+  ANY/SRV), which is arguably still not quite right — if the reflector still drops bridges, the next
+  step is a small custom `miekg/dns`-based resolver that mirrors the proven-working SRV+TXT+A+AAAA
+  query pattern verbatim instead of relying on a third-party client's retry logic.
 - Measured (65OLED806/Android 11): the TV actively queries `_hue._tcp` then fetches plain
   `/description.xml`; NO hue SSDP M-SEARCH (only `MediaServer`), NO cloud. So mDNS announce is the
   PRIMARY path. Working ref = hass-emulated-hue: instance name exactly `Philips Hue - XXXXXX` (last 6
@@ -86,7 +97,9 @@ All repo content (docs, code comments, logs) is English.
 - CI: push/PR to master runs tests; push to master builds+pushes image to ghcr.io/trick77/relume-tv (semver tag auto-bumped).
 
 ## toolchain trap
-- go 1.26 + grandcat/zeroconf v1.0.0 pulls ancient golang.org/x/net that fails to link (`syscall.recvmsg`). Keep x/net, x/sys, x/crypto upgraded.
+- go 1.26 + grandcat/zeroconf v1.0.0 pulled ancient golang.org/x/net that failed to link
+  (`syscall.recvmsg`). Since the hashicorp/mdns swap this dep is gone, but keep x/net, x/sys, x/crypto
+  upgraded regardless (hashicorp/mdns itself pulls a recent golang.org/x/net for ipv4/ipv6 packet conns).
 
 ## secrets
 - `relume-tv.json` holds Pro appKey/clientkey + TV tokens. Gitignored. Never commit.
