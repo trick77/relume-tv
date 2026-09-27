@@ -53,6 +53,10 @@ func mustPostUA(t *testing.T, url, body, userAgent string) *http.Response {
 // CLIP v1 pairing.
 const tvUserAgent = "Dalvik/2.1.0 (Linux; U; Android 11; 2021/22 Philips UHD Android TV Build/RTT2.211108.001)"
 
+// Observed from a Philips 65PUS8535/12 (Android 12); it omits both "Philips"
+// and "TV", which the original matcher required.
+const pus8535UserAgent = "Dalvik/2.1.0 (Linux; U; Android 12; TPM191E Build/STT2.230526.001)"
+
 func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 	t.Helper()
 	cfg, err := config.Load(filepath.Join(t.TempDir(), "c.json"))
@@ -114,6 +118,32 @@ func TestPairing_fromTVUserAgent_thenReturnsUsernameAndClientKey(t *testing.T) {
 	json.NewDecoder(cfgResp.Body).Decode(&cfg)
 	if cfg["modelid"] != "BSB002" {
 		t.Errorf("modelid = %v, expected BSB002", cfg["modelid"])
+	}
+}
+
+func TestPairing_fromPUS8535UserAgent_succeeds(t *testing.T) {
+	_, ts := newTestServer(t)
+	resp := mustPostUA(t, ts.URL+"/api", `{"devicetype":"65PUS8535/12","generateclientkey":true}`, pus8535UserAgent)
+	defer resp.Body.Close()
+	var out []map[string]map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode pairing: %v", err)
+	}
+	if len(out) != 1 || out[0]["success"]["username"] == "" || out[0]["success"]["clientkey"] == "" {
+		t.Fatalf("expected TV pairing credentials, got %v", out)
+	}
+}
+
+func TestPairing_fromUnrecognizedAndroidDevice_stillFails(t *testing.T) {
+	_, ts := newTestServer(t)
+	resp := mustPostUA(t, ts.URL+"/api", `{"devicetype":"phone"}`, "Dalvik/2.1.0 (Linux; U; Android 12; Pixel 8 Build/ABC)")
+	defer resp.Body.Close()
+	var out []map[string]map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode pairing: %v", err)
+	}
+	if len(out) != 1 || out[0]["error"] == nil || out[0]["error"]["type"].(float64) != 101 {
+		t.Fatalf("expected error 101 for non-TV Android device, got %v", out)
 	}
 }
 
@@ -1308,6 +1338,14 @@ func TestDescriptor_OnDescriptorFetch_firesOnlyForTVRequest(t *testing.T) {
 	// Then: the hook fires exactly once
 	if fired != 1 {
 		t.Fatalf("OnDescriptorFetch fired %d times for a TV request, want 1", fired)
+	}
+
+	// The 65PUS8535/12 uses a platform-code User-Agent without "Philips" or
+	// "TV", but its descriptor fetch must still advance the setup wizard.
+	resp = mustGetUA(t, ts.URL+"/description.xml", pus8535UserAgent)
+	resp.Body.Close()
+	if fired != 2 {
+		t.Fatalf("OnDescriptorFetch fired %d times after PUS8535 request, want 2", fired)
 	}
 }
 

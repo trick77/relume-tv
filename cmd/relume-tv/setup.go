@@ -193,12 +193,19 @@ func (s *setupStatus) recompute() {
 				next = stepProPowerOff
 			}
 		case stepProPowerOff:
-			// Transition, latched: the Pro must have been seen up and now be down.
-			if s.everReachable && !s.proReachable {
+			// A paired TV has already discovered and linked this bridge, so the
+			// discovery power cycle is unnecessary. Otherwise wait for Pro off.
+			if tvPaired {
+				next = stepProPowerOn
+			} else if s.everReachable && !s.proReachable {
 				next = stepRebootTV
 			}
 		case stepRebootTV:
-			if s.tvDescriptorSeen {
+			// Pairing proves the TV found this bridge even if its descriptor
+			// fetch was missed or its User-Agent was not recognized.
+			if tvPaired {
+				next = stepProPowerOn
+			} else if s.tvDescriptorSeen {
 				next = stepTVScan
 			}
 		case stepTVScan:

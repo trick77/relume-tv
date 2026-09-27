@@ -508,8 +508,9 @@ func (r *statusRecorder) Write(p []byte) (int, error) {
 
 // isTVRequest identifies the Ambilight TV so pairing can be auto-accepted only
 // for it (never an arbitrary LAN device): by source IP (when -tv-ip is set) or by
-// the Android/Dalvik TV User-Agent it uses for CLIP v1 pairing
-// (e.g. "Dalvik/2.1.0 (Linux; U; Android 11; 2021/22 Philips UHD Android TV ...)").
+// the Android/Dalvik TV User-Agent it uses for CLIP v1 pairing. Some Philips
+// models identify themselves only by their platform code (e.g. TPM191E),
+// without "Philips" or "TV" in the User-Agent.
 func (s *Server) isTVRequest(r *http.Request) bool {
 	if s.TVIP != "" {
 		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && host == s.TVIP {
@@ -517,7 +518,8 @@ func (s *Server) isTVRequest(r *http.Request) bool {
 		}
 	}
 	ua := strings.ToLower(r.UserAgent())
-	return strings.Contains(ua, "android") && (strings.Contains(ua, "philips") || strings.Contains(ua, "tv"))
+	return strings.Contains(ua, "android") &&
+		(strings.Contains(ua, "philips") || strings.Contains(ua, "tv") || strings.Contains(ua, "tpm191e build/"))
 }
 
 func (s *Server) handleDescription(w http.ResponseWriter, r *http.Request) {

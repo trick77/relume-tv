@@ -86,6 +86,7 @@ State (bridge identity, TV tokens, **Bridge Pro app key + client key**) lives in
 
 - **`-mode`** &nbsp;·&nbsp; default `entertainment` — Control mode: `entertainment` (low-latency DTLS stream to the Pro; auto-falls back to REST if the TV never opens its stream) or `rest` (per-light REST-follow). See [docs/DESIGN.md](docs/DESIGN.md#control-modes).
 - **`-advertise-ip`** &nbsp;·&nbsp; default auto — IP advertised via mDNS/SSDP; set it on a multi-homed host.
+- **`-tv-ip`** &nbsp;·&nbsp; default auto-detect by User-Agent — Identify the TV by source IP if its User-Agent is not recognized. Use a stable address for the TV.
 - **`-idle-off-timeout-rest`** &nbsp;·&nbsp; default `30s` — Rest mode: when the TV stops driving the lights for this long, turn them off (the TV sends no off signal, it just goes silent). REST writes are sparse and pause on static scenes, so this is longer than the entertainment timeout. `0` disables.
 - **`-idle-off-timeout-entertainment`** &nbsp;·&nbsp; default `5s` — Entertainment mode: same as above but for the DTLS stream path (~50 Hz, stops cleanly when the TV goes off), so a short timeout is safe. While entertainment mode sits on the REST fallback, the rest timeout applies instead. `0` disables.
 - **`-entertainment-dtls-timeout`** &nbsp;·&nbsp; default `5s` — Entertainment mode: how long to wait, after confirming the TV's stream activation, for the TV to open its DTLS stream before reverting to REST-follow. Raise it if a TV opens its stream slower.

@@ -141,6 +141,57 @@ func TestSetup_FullHappyPath(t *testing.T) {
 	}
 }
 
+func TestSetup_TVPairingSkipsMissedRebootSignal(t *testing.T) {
+	st, cfg, active, commits := newTestSetup(t)
+	pairPro(t, cfg)
+	st.recomputeNow()
+	st.setReachable(true)
+	st.setReachable(false)
+	if got := st.CurrentStep(); got != stepRebootTV {
+		t.Fatalf("after Pro power-off step = %d, want reboot step", got)
+	}
+
+	// A real TV can fetch the descriptor with an unrecognised User-Agent but
+	// still complete the pairing handshake. Pairing must advance setup.
+	pairTV(t, cfg)
+	st.recomputeNow()
+	if got := st.CurrentStep(); got != stepProPowerOn {
+		t.Fatalf("after TV pairing step = %d, want Pro power-on step", got)
+	}
+	if *commits != 0 {
+		t.Fatal("setup committed before the Pro returned and lights were driven")
+	}
+
+	st.setReachable(true)
+	if got := st.CurrentStep(); got != stepAssignBulbs {
+		t.Fatalf("after Pro returned step = %d, want bulb assignment", got)
+	}
+	*active = true
+	st.recomputeNow()
+	if got := st.CurrentStep(); got != stepDone || *commits != 1 {
+		t.Fatalf("after TV activity step = %d, commits = %d; want done and one commit", got, *commits)
+	}
+}
+
+func TestSetup_TVPairingBeforeProPairingSkipsPowerCycle(t *testing.T) {
+	st, cfg, _, commits := newTestSetup(t)
+	pairTV(t, cfg)
+	st.recomputeNow()
+	if got := st.CurrentStep(); got != stepPairPro {
+		t.Fatalf("before Pro pairing step = %d, want Pro pairing step", got)
+	}
+
+	pairPro(t, cfg)
+	st.recomputeNow()
+	if got := st.CurrentStep(); got != stepProPowerOn {
+		t.Fatalf("after both devices paired step = %d, want Pro power-on step", got)
+	}
+	st.setReachable(true)
+	if got := st.CurrentStep(); got != stepAssignBulbs || *commits != 0 {
+		t.Fatalf("with Pro reachable step = %d, commits = %d; want bulb assignment without commit", got, *commits)
+	}
+}
+
 // TestSetup_PowerOnOnlyAfterPowerOff ensures the power-on check (step 5) is gated behind
 // the power-off step: a reachable Pro before the power-off transition must not be mistaken
 // for "Pro back on".
