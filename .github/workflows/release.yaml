@@ -16,7 +16,7 @@ on:
     # hand — including after a change to this workflow, which .github/** ignores.
     paths-ignore:
       - "docs/**"
-      - "hack/**"
+      - "scripts/**"
       - ".github/**"
       - "**/*.md"
       - "LICENSE"
