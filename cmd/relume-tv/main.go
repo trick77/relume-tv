@@ -117,7 +117,7 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	httpPort := fs.Int("http-port", 80, "HTTP port of the emulated bridge")
 	advIP := fs.String("advertise-ip", "", "advertised IP (empty = auto-detect)")
 	debug := fs.Bool("debug", false, "verbose diagnostics: SSDP/HTTP datagrams + mDNS observer")
-	tvIP := fs.String("tv-ip", "", "TV IP to log all mDNS questions from in debug mode")
+	tvIP := fs.String("tv-ip", "", "TV IP to recognize TV requests (and log mDNS questions in debug mode)")
 	burstDuration := fs.Duration("discovery-burst-duration", 0, "send SSDP and mDNS discovery announcements at startup for this long")
 	burstInterval := fs.Duration("discovery-burst-interval", time.Second, "interval for discovery-burst announcements")
 	disableSSDP := fs.Bool("disable-ssdp", false, "do not run the SSDP responder (mDNS-only, like ha-hue-entertainment) — diagnostic")
