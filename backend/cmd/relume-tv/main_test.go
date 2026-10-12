@@ -824,3 +824,20 @@ func TestTVHandler_servesProbesAndPassesTheRestToClip(t *testing.T) {
 		}
 	}
 }
+
+func TestTVServeError_drainTimeoutIsNotFatal(t *testing.T) {
+	// Given
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	bind := errors.New("listen tcp :80: bind: address already in use")
+
+	// When / Then: a drain past its budget still lets the shutdown run, a bind failure does not
+	if err := tvServeError(fmt.Errorf("shutdown: %w", context.DeadlineExceeded), log); err != nil {
+		t.Errorf("drain timeout = %v, want nil", err)
+	}
+	if err := tvServeError(bind, log); !errors.Is(err, bind) {
+		t.Errorf("bind failure = %v, want it kept", err)
+	}
+	if err := tvServeError(nil, log); err != nil {
+		t.Errorf("clean stop = %v, want nil", err)
+	}
+}

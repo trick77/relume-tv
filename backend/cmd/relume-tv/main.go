@@ -619,7 +619,7 @@ func runServe(opts serveOptions) error {
 
 	log.Info("http server started", "addr", httpSrv.Addr)
 	// Serve blocks until SIGINT/SIGTERM or ctx ends, then drains for up to 5s.
-	err = httpx.Serve(ctx, httpSrv, 5*time.Second)
+	err = tvServeError(httpx.Serve(ctx, httpSrv, 5*time.Second), log)
 	cancel()
 	if err != nil {
 		err = fmt.Errorf("http: %w", err)
@@ -978,6 +978,18 @@ func hostname() string {
 		return "host"
 	}
 	return h
+}
+
+// tvServeError keeps a drain that outlived its budget from aborting the shutdown: a
+// TV request can sit on the Pro round-trip (up to 10 s) past the 5 s drain, and the
+// lights-off and stream release after Serve must still run. Only a real serve
+// failure (a port that cannot bind) stays an error.
+func tvServeError(err error, log *slog.Logger) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		log.Warn("http drain timed out; shutting down anyway", logging.Err(err))
+		return nil
+	}
+	return err
 }
 
 // newTVServer builds the TV-facing HTTP server. Read (headers and body) and idle
