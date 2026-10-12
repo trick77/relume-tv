@@ -21,6 +21,15 @@ services:
     # Config defaults to relume-tv.json; the image's WORKDIR is /data, so it lands
     # in the named volume above.
     command: ["serve"]
+    # Liveness: the binary probes its own /healthz on the TV-facing port (distroless,
+    # no shell or curl). Pass the same -http-port here if the command above sets one.
+    healthcheck:
+      test: ["CMD", "relume-tv", "serve", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    # Log level: -log-level debug|info|warn|error in the command, or LOG_LEVEL.
     # Web UI (setup assistant + live dashboard) is ON by default on port 33100.
     # ⚠️ With network_mode: host it is reachable on the LAN as-is (no port mapping
     # needed) and has NO authentication — anyone on the LAN can open it. To turn it

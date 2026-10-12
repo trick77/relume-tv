@@ -97,7 +97,14 @@ State (bridge identity, TV tokens, **Bridge Pro app key + client key**) lives in
 - **`-skip-tls-verify`** &nbsp;·&nbsp; default off — Skip Bridge Pro certificate pinning (fallback).
 - **`-headless`** &nbsp;·&nbsp; default off — Disable the web UI. The web UI (setup assistant + live status dashboard) is **on by default** on the predefined port `33100`. ⚠️ **No authentication: with `network_mode: host` the dashboard is reachable by anyone on the LAN out of the box.** Pass `-headless` to turn it off on untrusted networks.
 - **`-ui-port`** &nbsp;·&nbsp; default `33100` — Web UI port. Pass `0` to use the predefined port `33100`, or any other value to override it. Must differ from the HTTP port (80). Ignored when `-headless` is set.
-- **`-debug`** &nbsp;·&nbsp; default off — SSDP/HTTP diagnostics + mDNS observer.
+- **`-debug`** &nbsp;·&nbsp; default off — SSDP/HTTP diagnostics + mDNS observer. Independent of `-log-level`.
+- **`-log-level`** &nbsp;·&nbsp; default `info`, or `$LOG_LEVEL` — `debug`, `info`, `warn` or `error`. An unknown value fails startup.
+- **`-healthcheck`** &nbsp;·&nbsp; — Probe the running instance's `/healthz` on `-http-port` and exit `0` (healthy) or `1`. The image's and compose's healthcheck; pass the same `-http-port` as `serve`.
+
+### Health
+
+Both HTTP servers answer `GET /healthz` (liveness) and `GET /readyz` (readiness, no checks: relume-tv is useful
+before the Bridge Pro is paired). The image is distroless: there is no shell inside the container.
 
 ## Development
 
@@ -110,9 +117,8 @@ The full gate is [ship](https://github.com/trick77/ship) (`ship.yaml`): build, l
 subjects in Go style (`area: what`):
 
 ```bash
-ship() { go run "github.com/trick77/ship@$(git ls-remote https://github.com/trick77/ship refs/heads/master | cut -f1)" "$@"; }
-ship hooks   # once per clone: the pre-push hook runs ship check on every push
-ship check
+make hooks   # once per clone: the pre-push hook runs ship check on every push
+make check
 ```
 
 ## Documentation

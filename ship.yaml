@@ -6,6 +6,9 @@ go:
 images:
   # The TV-side hosts run both: x86 NAS/servers and Raspberry Pi-class boards.
   - platforms: [linux/amd64, linux/arm64]
+allow:
+  - rule: containerfile
+    why: binds :80 in the host network namespace (network_mode host) and writes the root-owned /data volume of existing installs
 steps:
   # go:embed cannot reach ../ui: the asset tests read the copy in backend/web/dist.
   - { name: ui sync, run: make ui }

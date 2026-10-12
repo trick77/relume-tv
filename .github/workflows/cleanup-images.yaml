@@ -1,30 +1,25 @@
 name: Cleanup images
 
-# Prune old container images from GHCR, keeping the 10 most recent tagged
-# releases plus their multi-arch child manifests. Untagged orphans (old buildx
-# layers, attestations) are removed too.
+# By hand only (Actions minutes): keep the 10 newest tagged versions of each image, delete the rest.
 on:
-  schedule:
-    - cron: "0 4 * * 0" # weekly, Sundays 04:00 UTC
   workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Preview deletions without removing anything"
+        type: boolean
+        default: false
 
-permissions:
-  packages: write
-
+# Two runs must not delete the same versions at once: the second waits.
 concurrency:
-  group: ghcr-cleanup
+  group: cleanup-images
   cancel-in-progress: false
 
 jobs:
   cleanup:
-    runs-on: ubuntu-latest
-    steps:
-      # Manifest-list aware: keeping a tagged image keeps its arch children, so
-      # multi-arch (amd64/arm64) pulls of retained tags stay intact.
-      - uses: dataaxiom/ghcr-cleanup-action@v1
-        with:
-          # Pin the GHCR package name explicitly so the action targets the right
-          # package regardless of how it derives the default from the repo slug.
-          package: relume-tv
-          keep-n-tagged: 10
-          delete-untagged: true
+    uses: trick77/ship/.github/workflows/cleanup-images.yaml@master
+    with:
+      packages: '["relume-tv"]'
+      dry-run: ${{ inputs.dry-run }}
+    permissions:
+      contents: read
+      packages: write

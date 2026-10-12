@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -739,5 +744,134 @@ func TestNewTVServer_boundsStalledConnectionsButNeverTruncatesResponses(t *testi
 	}
 	if srv.WriteTimeout != 0 {
 		t.Errorf("WriteTimeout = %s; want 0 (a deadline would truncate a Pro-bound response)", srv.WriteTimeout)
+	}
+}
+
+func TestParseServeOptions_logLevelAndHealthcheck(t *testing.T) {
+	// Given: LOG_LEVEL is the default, the flag wins over it
+	t.Setenv("LOG_LEVEL", "warn")
+
+	// When
+	def, err := parseServeOptions(nil)
+	if err != nil {
+		t.Fatalf("parseServeOptions: %v", err)
+	}
+	set, err := parseServeOptions([]string{"-log-level", "debug", "-healthcheck"})
+	if err != nil {
+		t.Fatalf("parseServeOptions: %v", err)
+	}
+
+	// Then
+	if def.logLevel != "warn" || def.healthcheck {
+		t.Errorf("defaults: logLevel=%q healthcheck=%v, want warn/false", def.logLevel, def.healthcheck)
+	}
+	if set.logLevel != "debug" || !set.healthcheck {
+		t.Errorf("flags: logLevel=%q healthcheck=%v, want debug/true", set.logLevel, set.healthcheck)
+	}
+}
+
+func TestServeContext_endsOnSIGTERMAndOnCancel(t *testing.T) {
+	// Given
+	ctx, cancel := serveContext()
+	defer cancel()
+
+	// When: the process gets SIGTERM (the handler is installed, so it is not fatal)
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+
+	// Then
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("serve context did not end on SIGTERM")
+	}
+
+	// And: cancel alone ends a fresh one
+	ctx2, cancel2 := serveContext()
+	cancel2()
+	if ctx2.Err() == nil {
+		t.Error("serve context did not end on cancel")
+	}
+}
+
+func TestHealthcheckURL_probesTheTVServer(t *testing.T) {
+	// When: even headless, the TV-facing server is what the probe hits
+	got := healthcheckURL(serveOptions{httpPort: 8080, headless: true})
+
+	// Then
+	if got != "http://127.0.0.1:8080/healthz" {
+		t.Errorf("healthcheckURL = %q", got)
+	}
+}
+
+func TestTVHandler_servesProbesAndPassesTheRestToClip(t *testing.T) {
+	// Given
+	clip := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
+	h := tvHandler(clip, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	for path, want := range map[string]int{
+		"/healthz":          http.StatusOK,
+		"/readyz":           http.StatusOK,
+		"/description.xml":  http.StatusTeapot,
+		"/api/user/lights/": http.StatusTeapot,
+	} {
+		// When
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+
+		// Then
+		if rec.Code != want {
+			t.Errorf("GET %s = %d, want %d", path, rec.Code, want)
+		}
+	}
+}
+
+func TestTVServeError_drainTimeoutIsNotFatal(t *testing.T) {
+	// Given
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	bind := errors.New("listen tcp :80: bind: address already in use")
+
+	// When / Then: a drain past its budget still lets the shutdown run, a bind failure does not
+	if err := tvServeError(fmt.Errorf("shutdown: %w", context.DeadlineExceeded), log); err != nil {
+		t.Errorf("drain timeout = %v, want nil", err)
+	}
+	if err := tvServeError(bind, log); !errors.Is(err, bind) {
+		t.Errorf("bind failure = %v, want it kept", err)
+	}
+	if err := tvServeError(nil, log); err != nil {
+		t.Errorf("clean stop = %v, want nil", err)
+	}
+}
+
+func TestTVHandler_skipsSuccessfulTVLightTrafficInTheAccessLog(t *testing.T) {
+	// Given: clip answers with the status the test sets per request
+	status := http.StatusOK
+	clip := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) })
+	var buf bytes.Buffer
+	h := tvHandler(clip, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	for _, tc := range []struct {
+		method, path string
+		status       int
+		logged       bool
+	}{
+		{http.MethodPut, "/api/tv/lights/1/state", http.StatusOK, false},
+		{http.MethodPut, "/api/tv/groups/2/action", http.StatusOK, false},
+		{http.MethodGet, "/api/tv/lights/1", http.StatusOK, false},
+		{http.MethodPut, "/api/tv/lights/1/state", http.StatusBadGateway, true},
+		{http.MethodPut, "/api/tv/lights/1/state", http.StatusBadRequest, true},
+		{http.MethodGet, "/api/tv/lights", http.StatusOK, true},
+		{http.MethodGet, "/description.xml", http.StatusOK, true},
+	} {
+		// When
+		buf.Reset()
+		status = tc.status
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(tc.method, tc.path, nil))
+
+		// Then
+		if got := strings.Contains(buf.String(), "http_request"); got != tc.logged {
+			t.Errorf("%s %s -> %d: logged=%v, want %v", tc.method, tc.path, tc.status, got, tc.logged)
+		}
 	}
 }

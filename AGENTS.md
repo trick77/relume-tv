@@ -24,7 +24,10 @@ All repo content (docs, code comments, logs) is English.
   toggle Ambilight (not Ambilight+Hue) on the TV to reconnect.
 - env diagnostics (no -debug flood): `RELUME_TV_GAP_TRACE=1` logs inter-write gaps (idle-off
   calibration). grep `ENTERTAINMENT` / `ambilight activity`.
-- commands: `serve` (default), `avahi-service`, `version`
+- commands: `serve` (default), `avahi-service`, `version`. `serve -healthcheck` probes `/healthz` on the TV port
+  (always up; UI may be headless). `-log-level`/`$LOG_LEVEL` is separate from `-debug`.
+- image: distroless static AS ROOT (ship.yaml allow): binds :80 under host networking, existing /data volumes are
+  root-owned. `:nonroot` breaks every install. CLIP v1 `[{"error":{…}}]` is the Hue protocol, not kit's body: keep.
 - pairing is auto-accepted (no link button, no UI) — but ONLY for the TV (source IP == `-tv-ip`, or
   the Android/Dalvik Philips-TV User-Agent: "philips"/"tv", or a TP Vision platform code like
   `TPM191E Build/`); other LAN devices get error 101. POST /api is

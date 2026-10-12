@@ -11,9 +11,6 @@ relume-tv.json
 *.log
 /dist/
 
-# Coverage
-coverage.out
-
 # brainstorming visual companion
 .superpowers/
 

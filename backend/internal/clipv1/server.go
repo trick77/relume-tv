@@ -387,6 +387,19 @@ func isGroupActionWrite(r *http.Request) bool {
 		strings.HasSuffix(r.URL.Path, "/action")
 }
 
+// IsHighFrequency reports whether r is one of the TV's high-frequency paths that
+// logRequests rolls up into the activity summary instead of logging per request:
+// light-state and group-action writes and the per-light state poll.
+func IsHighFrequency(r *http.Request) bool {
+	if _, ok := lightStateWriteID(r); ok {
+		return true
+	}
+	if _, ok := lightStateReadID(r); ok {
+		return true
+	}
+	return isGroupActionWrite(r)
+}
+
 // recordLightWrite accumulates one Ambilight light-state write for the periodic
 // summary emitted by LogActivitySummary.
 func (s *Server) recordLightWrite(id string) { s.activity.recordLightWrite(id) }

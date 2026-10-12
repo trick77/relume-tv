@@ -234,9 +234,13 @@ func TestLoad_RemovesOrphanedTempFile(t *testing.T) {
 	if _, err := Load(path); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte("garbage"), 0o600); err != nil {
-		t.Fatal(err)
+	legacy := path + ".tmp"
+	atomic := filepath.Join(dir, ".relume-tv.json.tmp-123")
+	other := filepath.Join(dir, ".other.json.tmp-123")
+	for _, f := range []string{legacy, atomic, other} {
+		if err := os.WriteFile(f, []byte("garbage"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	// When
@@ -244,9 +248,14 @@ func TestLoad_RemovesOrphanedTempFile(t *testing.T) {
 		t.Fatalf("Load 2: %v", err)
 	}
 
-	// Then: the orphaned temp file is gone
-	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
-		t.Errorf("orphaned .tmp not removed (stat err = %v)", err)
+	// Then: both temp shapes of this config are gone, another file's temp stays
+	for _, f := range []string{legacy, atomic} {
+		if _, err := os.Stat(f); !os.IsNotExist(err) {
+			t.Errorf("orphaned %s not removed (stat err = %v)", f, err)
+		}
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Errorf("unrelated temp file removed: %v", err)
 	}
 }
 
