@@ -119,6 +119,9 @@ func (u *uiSource) SetupInfo() (discoveredHost string, bridgeIsPro, discoveryOK,
 	return discoveredHost, bridgeIsPro, discoveryOK, proReachable, tvDescriptorSeen, precondMsg
 }
 
+// PowerCycleSkipped reports whether the wizard skipped the Pro power cycle (TV already paired).
+func (u *uiSource) PowerCycleSkipped() bool { return u.setup.PowerCycleSkipped() }
+
 // Active reports whether the TV is currently driving any light — tied to the same
 // 2s freshness window as the driven count, so the header "Active/Idle" state, the
 // Lights "driven" count and the flash button stay consistent (no window where the

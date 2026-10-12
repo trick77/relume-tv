@@ -24,7 +24,8 @@ All repo content (docs, code comments, logs) is English.
   calibration). grep `ENTERTAINMENT` / `ambilight activity`.
 - commands: `serve` (default), `avahi-service`, `version`
 - pairing is auto-accepted (no link button, no UI) — but ONLY for the TV (source IP == `-tv-ip`, or
-  the Android/Dalvik Philips-TV User-Agent); other LAN devices get error 101. POST /api is
+  the Android/Dalvik Philips-TV User-Agent: "philips"/"tv", or a TP Vision platform code like
+  `TPM191E Build/`); other LAN devices get error 101. POST /api is
   idempotent per devicetype (TV polls it fast). Pairing needs no `link` command and no UI step — it
   is driven via logs.
 - web UI (setup assistant + live dashboard) is ON by default on :33100; `-headless` disables it,

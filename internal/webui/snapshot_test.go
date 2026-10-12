@@ -54,6 +54,7 @@ func (f fakeSource) FirstRun() bool                   { return false }
 func (f fakeSource) SetupInfo() (string, bool, bool, bool, bool, string) {
 	return "10.0.0.5", true, true, true, true, ""
 }
+func (f fakeSource) PowerCycleSkipped() bool { return true }
 
 // stepDoneSnap mirrors cmd/relume-tv's stepDone sentinel for the webui test fakes
 // (kept local so the webui package stays independent of cmd).
@@ -244,6 +245,7 @@ func (emptySource) FirstRun() bool                   { return true }
 func (emptySource) SetupInfo() (string, bool, bool, bool, bool, string) {
 	return "", false, true, false, false, ""
 }
+func (emptySource) PowerCycleSkipped() bool { return false }
 
 func TestBuildSnapshot_EmptyArraysNotNil(t *testing.T) {
 	s := BuildSnapshot(emptySource{})

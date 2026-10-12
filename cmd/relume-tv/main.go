@@ -340,6 +340,8 @@ func runServe(args []string, log *slog.Logger) error {
 	// The TV re-fetches /description.xml after a reboot — the step-2 signal. Wired in both
 	// UI and headless modes (markTVDescriptorSeen only latches while step 2 is active).
 	clip.OnDescriptorFetch = setup.markTVDescriptorSeen
+	// A TV pairing is the step-4 signal: advance at once, not on the next watcher tick.
+	clip.OnPair = setup.recomputeNow
 
 	if pro != nil {
 		client := bridgepro.New(pro)

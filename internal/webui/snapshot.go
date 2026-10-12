@@ -120,6 +120,9 @@ type Snapshot struct {
 	ProReachable bool `json:"proReachable"`
 	// TVDescriptorSeen is whether the TV has fetched the descriptor (step 2 signal).
 	TVDescriptorSeen bool `json:"tvDescriptorSeen"`
+	// PowerCycleSkipped: a TV was already paired, so the Pro was never powered off
+	// (steps 2 and 5 say "skipped" instead of "detected").
+	PowerCycleSkipped bool `json:"powerCycleSkipped"`
 	// PrecondMsg is a human-readable precondition warning for the wizard banner:
 	// (a) no bridge found, (b) the bridge is not a Pro, or (c) mDNS discovery unavailable.
 	// Empty when there is nothing to flag.
@@ -197,6 +200,9 @@ type StateSource interface {
 	// (mDNS discovery working), proReachable (live), tvDescriptorSeen (step 2), and
 	// precondMsg (the wizard banner text, empty when nothing to flag).
 	SetupInfo() (discoveredHost string, bridgeIsPro, discoveryOK, proReachable, tvDescriptorSeen bool, precondMsg string)
+	// PowerCycleSkipped reports whether the wizard skipped the Pro power cycle because a
+	// TV was already paired.
+	PowerCycleSkipped() bool
 }
 
 func rfc3339(t time.Time) string {
@@ -257,6 +263,7 @@ func BuildSnapshot(src StateSource) Snapshot {
 	s.CurrentStep = src.CurrentStep()
 	s.FirstRun = src.FirstRun()
 	s.DiscoveredHost, s.BridgeIsPro, s.DiscoveryOK, s.ProReachable, s.TVDescriptorSeen, s.PrecondMsg = src.SetupInfo()
+	s.PowerCycleSkipped = src.PowerCycleSkipped()
 
 	switch {
 	case !paired:

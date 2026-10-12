@@ -14,6 +14,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -97,6 +98,11 @@ type Server struct {
 	// signal (step 2): a fresh TV reboot re-fetches the descriptor. Wired by main to
 	// setupStatus.markTVDescriptorSeen.
 	OnDescriptorFetch func()
+
+	// OnPair, if set, is called after the TV's first pairing is persisted, so the setup
+	// wizard advances at once instead of on the next watcher tick. Wired by main to
+	// setupStatus.recomputeNow.
+	OnPair func()
 }
 
 // defaultDTLSFallbackTimeout is how long relume-tv waits, after confirming the TV's
@@ -509,8 +515,8 @@ func (r *statusRecorder) Write(p []byte) (int, error) {
 // isTVRequest identifies the Ambilight TV so pairing can be auto-accepted only
 // for it (never an arbitrary LAN device): by source IP (when -tv-ip is set) or by
 // the Android/Dalvik TV User-Agent it uses for CLIP v1 pairing. Some Philips
-// models identify themselves only by their platform code (e.g. TPM191E),
-// without "Philips" or "TV" in the User-Agent.
+// models identify themselves only by their TP Vision platform code (TPM191E on a
+// 65PUS8535, likewise TPM171E, TPM211E, ...), without "Philips" or "TV".
 func (s *Server) isTVRequest(r *http.Request) bool {
 	if s.TVIP != "" {
 		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && host == s.TVIP {
@@ -519,8 +525,12 @@ func (s *Server) isTVRequest(r *http.Request) bool {
 	}
 	ua := strings.ToLower(r.UserAgent())
 	return strings.Contains(ua, "android") &&
-		(strings.Contains(ua, "philips") || strings.Contains(ua, "tv") || strings.Contains(ua, "tpm191e build/"))
+		(strings.Contains(ua, "philips") || strings.Contains(ua, "tv") || tpmPlatform.MatchString(ua))
 }
+
+// tpmPlatform is a TP Vision (Philips TV) platform code in a lower-cased Android
+// User-Agent, e.g. "tpm191e build/stt2...".
+var tpmPlatform = regexp.MustCompile(`\btpm\d{3}[a-z]*\s+build/`)
 
 func (s *Server) handleDescription(w http.ResponseWriter, r *http.Request) {
 	// Setup wizard step-2 signal: the TV re-fetches the descriptor after a reboot. Fire
@@ -608,6 +618,9 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("tv paired", "username", username, "entertainment", req.GenerateClientKey)
 
 	writeJSON(w, []map[string]any{{"success": success}})
+	if s.OnPair != nil {
+		s.OnPair()
+	}
 }
 
 // bridgeIDSuffix is the last 6 characters of the 16-hex bridge id — the short, stable
