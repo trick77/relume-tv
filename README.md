@@ -106,6 +106,15 @@ go build -o relume-tv ./cmd/relume-tv
 go test ./...
 ```
 
+The full gate is [ship](https://github.com/trick77/ship) (`ship.yaml`): build, lint, tests with coverage, commit
+subjects in Go style (`area: what`):
+
+```bash
+ship() { go run "github.com/trick77/ship@$(git ls-remote https://github.com/trick77/ship refs/heads/master | cut -f1)" "$@"; }
+ship hooks   # once per clone: the pre-push hook runs ship check on every push
+ship check
+```
+
 ## Documentation
 
 - **[docs/DESIGN.md](docs/DESIGN.md)** — how relume-tv works: identity, pairing, control modes.
