@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -763,6 +765,31 @@ func TestParseServeOptions_logLevelAndHealthcheck(t *testing.T) {
 	}
 	if set.logLevel != "debug" || !set.healthcheck {
 		t.Errorf("flags: logLevel=%q healthcheck=%v, want debug/true", set.logLevel, set.healthcheck)
+	}
+}
+
+func TestServeContext_endsOnSIGTERMAndOnCancel(t *testing.T) {
+	// Given
+	ctx, cancel := serveContext()
+	defer cancel()
+
+	// When: the process gets SIGTERM (the handler is installed, so it is not fatal)
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+
+	// Then
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("serve context did not end on SIGTERM")
+	}
+
+	// And: cancel alone ends a fresh one
+	ctx2, cancel2 := serveContext()
+	cancel2()
+	if ctx2.Err() == nil {
+		t.Error("serve context did not end on cancel")
 	}
 }
 

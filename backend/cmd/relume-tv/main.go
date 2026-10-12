@@ -19,6 +19,7 @@ import (
 
 	"github.com/trick77/ship/kit/httpx"
 	"github.com/trick77/ship/kit/logging"
+	"github.com/trick77/ship/kit/run"
 	"github.com/trick77/ship/kit/version"
 
 	"github.com/trick77/relume-tv/internal/bridge"
@@ -250,6 +251,18 @@ func tvHandler(clip http.Handler, log *slog.Logger) http.Handler {
 	return mux
 }
 
+// serveContext is serve's root context: it ends on SIGINT/SIGTERM (kit/run) or on
+// cancel. Taken once, before any server starts, so a signal that lands between the
+// two servers' start-up still reaches both.
+func serveContext() (context.Context, context.CancelFunc) {
+	sigCtx, stop := run.Context(context.Background())
+	ctx, cancel := context.WithCancel(sigCtx)
+	return ctx, func() {
+		cancel()
+		stop()
+	}
+}
+
 func runServe(opts serveOptions) error {
 	sc, err := deriveServeConfig(opts)
 	if err != nil {
@@ -388,8 +401,9 @@ func runServe(opts serveOptions) error {
 	announcer.BurstDuration = opts.discoveryBurstDuration
 	announcer.BurstInterval = opts.discoveryBurstInterval
 
-	// Cancelled once the TV-facing server stops: httpx.Serve owns SIGINT/SIGTERM.
-	ctx, cancel := context.WithCancel(context.Background())
+	// One context for every worker and both servers: it ends on SIGINT/SIGTERM or
+	// once the TV-facing server stops, so a single signal stops everything at once.
+	ctx, cancel := serveContext()
 	defer cancel()
 
 	// Pair the Hue Bridge Pro backend in the background, independently of the TV: the
