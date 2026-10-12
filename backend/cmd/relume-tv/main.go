@@ -14,10 +14,12 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"strconv"
-	"syscall"
 	"time"
+
+	"github.com/trick77/ship/kit/httpx"
+	"github.com/trick77/ship/kit/logging"
+	"github.com/trick77/ship/kit/version"
 
 	"github.com/trick77/relume-tv/internal/bridge"
 	"github.com/trick77/relume-tv/internal/bridgepro"
@@ -30,12 +32,7 @@ import (
 	"github.com/trick77/relume-tv/internal/webui"
 )
 
-// version is set at build time via -ldflags "-X main.version=..." (CI).
-var version = "dev"
-
 func main() {
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-
 	cmd := "serve"
 	if len(os.Args) > 1 {
 		cmd = os.Args[1]
@@ -43,11 +40,19 @@ func main() {
 
 	switch cmd {
 	case "version", "-version", "--version":
-		fmt.Println("relume-tv", version)
+		fmt.Println("relume-tv", version.String())
 		return
 	case "serve":
-		if err := runServe(os.Args[2:], log); err != nil {
-			log.Error("serve terminated", "err", err)
+		opts, err := parseServeOptions(os.Args[2:])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		if opts.healthcheck {
+			os.Exit(httpx.Healthcheck(healthcheckURL(opts)))
+		}
+		if err := runServe(opts); err != nil {
+			slog.Error("serve terminated", logging.Err(err))
 			os.Exit(1)
 		}
 	case "avahi-service":
@@ -82,6 +87,8 @@ type serveOptions struct {
 	medianThreshold        int
 	headless               bool
 	uiPort                 int
+	logLevel               string
+	healthcheck            bool
 }
 
 // uiDefaultPort is the fixed port the web UI listens on. -ui-port overrides it
@@ -133,6 +140,8 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	medianThreshold := fs.Int("entertainment-median-threshold", entertainment.DefaultMedianThreshold, "entertainment mode: per-component 'crass' magnitude (of 65535) above which the median filter may suppress a change; smaller changes pass verbatim. Only active when -entertainment-median-window > 1. Tune against the bri_max_jump/col_max_jump debug stats")
 	headless := fs.Bool("headless", false, "disable the web UI (it runs on the predefined port 33100 by default). NOTE: with network_mode: host the UI is otherwise reachable, unauthenticated, by anyone on the LAN")
 	uiPort := fs.Int("ui-port", 0, "override the web UI port (0 = the predefined port 33100). Must differ from -http-port (80). Ignored when -headless is set")
+	logLevel := fs.String("log-level", os.Getenv("LOG_LEVEL"), "debug, info, warn or error (default info, or $LOG_LEVEL); an unknown value fails startup. Independent of -debug")
+	healthcheck := fs.Bool("healthcheck", false, "probe the running instance's /healthz on -http-port and exit 0 (healthy) or 1: the container healthcheck (pass the same -http-port as serve)")
 	if err := fs.Parse(args); err != nil {
 		return serveOptions{}, err
 	}
@@ -157,6 +166,8 @@ func parseServeOptions(args []string) (serveOptions, error) {
 		medianThreshold:        *medianThreshold,
 		headless:               *headless,
 		uiPort:                 *uiPort,
+		logLevel:               *logLevel,
+		healthcheck:            *healthcheck,
 	}, nil
 }
 
@@ -223,12 +234,28 @@ func deriveServeConfig(opts serveOptions) (serveConfig, error) {
 	}, nil
 }
 
-func runServe(args []string, log *slog.Logger) error {
-	opts, err := parseServeOptions(args)
+// healthcheckURL is the liveness probe -healthcheck hits: /healthz on the TV-facing
+// server, which always runs (the web UI may be -headless).
+func healthcheckURL(opts serveOptions) string {
+	return httpx.LocalURL(fmt.Sprintf(":%d", opts.httpPort), "/healthz")
+}
+
+// tvHandler mounts the liveness/readiness probes in front of the CLIP v1 API. They
+// sit outside clip's handler so a container probe never shows up in its request log.
+// No readiness checks: relume-tv is useful (discoverable, pairable) before the Pro is.
+func tvHandler(clip http.Handler, log *slog.Logger) http.Handler {
+	mux := http.NewServeMux()
+	httpx.Health(mux, log)
+	mux.Handle("/", clip)
+	return mux
+}
+
+func runServe(opts serveOptions) error {
+	sc, err := deriveServeConfig(opts)
 	if err != nil {
 		return err
 	}
-	sc, err := deriveServeConfig(opts)
+	log, err := logging.Setup(logging.Options{Level: opts.logLevel, LevelVar: "-log-level"})
 	if err != nil {
 		return err
 	}
@@ -241,8 +268,8 @@ func runServe(args []string, log *slog.Logger) error {
 	var uiHub *webui.Hub
 	if uiPort != 0 {
 		uiHub = webui.NewHub(200)
-		base := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})
-		log = slog.New(webui.NewLogHandler(base, uiHub))
+		log = slog.New(webui.NewLogHandler(log.Handler(), uiHub))
+		slog.SetDefault(log)
 	}
 
 	cfg, err := config.Load(opts.configPath)
@@ -264,7 +291,7 @@ func runServe(args []string, log *slog.Logger) error {
 			return fmt.Errorf("auto-detect advertise-ip: %w (use -advertise-ip)", err)
 		}
 	}
-	log.Info("relume-tv", "version", version)
+	log.Info("relume-tv", "version", version.String())
 	log.Info("identity", "serial", cfg.Identity.Serial, "bridgeid", cfg.Identity.BridgeID(), "advertise", ip)
 	// Dump the saved state on startup (no secrets): which Hue Bridge Pro is paired and
 	// which TVs are already paired. An already-paired TV explains an "instant"
@@ -361,8 +388,9 @@ func runServe(args []string, log *slog.Logger) error {
 	announcer.BurstDuration = opts.discoveryBurstDuration
 	announcer.BurstInterval = opts.discoveryBurstInterval
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	// Cancelled once the TV-facing server stops: httpx.Serve owns SIGINT/SIGTERM.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// Pair the Hue Bridge Pro backend in the background, independently of the TV: the
 	// TV can discover/pair relume-tv before the Pro is paired; relume-tv just returns an
@@ -401,7 +429,7 @@ func runServe(args []string, log *slog.Logger) error {
 			// is still "Philips Hue - …" (internal/mdns), deliberately unchanged so
 			// discovery keeps working.
 			advName: "relume-tv-" + bridgeID[len(bridgeID)-6:],
-			version: version,
+			version: version.String(),
 			started: time.Now(),
 			// The configured DTLS easing time constant (ms), so the Stream card's
 			// tooltip reflects -entertainment-smooth-tau, not just the default. A
@@ -556,33 +584,36 @@ func runServe(args []string, log *slog.Logger) error {
 		log.Info("debug mode active: SSDP/HTTP diagnostics + mDNS observer", "tvIP", opts.tvIP)
 	}
 
-	httpSrv := newTVServer(opts.httpPort, clip.Handler())
+	httpSrv := newTVServer(opts.httpPort, tvHandler(clip.Handler(), log))
 
-	errc := make(chan error, 2)
-	go func() {
-		log.Info("http server started", "addr", httpSrv.Addr)
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errc <- fmt.Errorf("http: %w", err)
-		}
-	}()
+	// An SSDP failure cancels ctx, which drains the TV server like a signal would.
+	ssdpErr := make(chan error, 1)
 	if responder != nil {
 		go func() {
 			if err := responder.Run(ctx); err != nil && ctx.Err() == nil {
-				errc <- fmt.Errorf("ssdp: %w", err)
+				ssdpErr <- fmt.Errorf("ssdp: %w", err)
+				cancel()
 			}
 		}()
 	}
 
-	select {
-	case <-ctx.Done():
-		log.Info("shutdown signal")
-	case err := <-errc:
-		stop()
-		shutdownHTTP(httpSrv)
+	log.Info("http server started", "addr", httpSrv.Addr)
+	// Serve blocks until SIGINT/SIGTERM or ctx ends, then drains for up to 5s.
+	err = httpx.Serve(ctx, httpSrv, 5*time.Second)
+	cancel()
+	if err != nil {
+		err = fmt.Errorf("http: %w", err)
+	} else {
+		select {
+		case err = <-ssdpErr:
+		default:
+		}
+	}
+	if err != nil {
 		stopEntertainment(entStreamer)
 		return err
 	}
-	shutdownHTTP(httpSrv)
+	log.Info("shutdown signal")
 	// Release relume-tv's own entertainment stream on the Pro before turning the lights
 	// off, so the Pro area is deactivated (StopStream uses the client's own timeout, not
 	// the cancelled ctx) and never leaks past process exit (Phase D).
@@ -674,12 +705,6 @@ func newProvider(client *bridgepro.Client, controlled *bridge.ControlledSet, liv
 	p.OnCoalesce = stats.coalesces.Mark
 	p.OnForwardErr = stats.markForwardErr
 	return p
-}
-
-func shutdownHTTP(srv *http.Server) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = srv.Shutdown(ctx)
 }
 
 // monitorIdle watches the TV's Ambilight write activity and, once it has gone
@@ -943,13 +968,9 @@ func hostname() string {
 // deadline shorter than that would truncate the body mid-response — worse for the
 // TV than a slow answer.
 func newTVServer(port int, h http.Handler) *http.Server {
-	return &http.Server{
-		Addr:              fmt.Sprintf(":%d", port),
-		Handler:           h,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
+	srv := httpx.NewServer(fmt.Sprintf(":%d", port), h)
+	srv.ReadTimeout = 15 * time.Second
+	return srv
 }
 
 // outboundIP determines the local IPv4 over which outbound traffic flows.

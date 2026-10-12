@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
+
+	"github.com/trick77/ship/kit/httpx"
 
 	"github.com/trick77/relume-tv/web"
 )
@@ -64,6 +67,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/state", s.handleState)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
+	httpx.Health(mux, s.log)
 
 	assets := s.assets
 	if assets == nil {
@@ -84,14 +88,13 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(BuildSnapshot(s.src))
+	httpx.WriteJSON(w, http.StatusOK, BuildSnapshot(s.src))
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -155,44 +158,26 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// newHTTPServer builds the listening server. It is split out so the timeouts are
-// assertable.
+// newHTTPServer builds the listening server with kit's canonical timeouts: a
+// ReadHeaderTimeout (slow-loris bound) and no Read/WriteTimeout, which would
+// truncate the long-lived /api/events SSE stream. It is split out so the timeouts
+// are assertable.
 //
-// ReadHeaderTimeout is the slow-loris bound and the ONLY read deadline set
-// here. ReadTimeout would be wrong: it bounds the whole request including the
-// body, and once the body is read the same deadline cancels r.Context(), so it
-// would cut off a large upload and kill any long-running handler.
-//
-// WriteTimeout is absent for the same reason: /events is a long-lived SSE
-// stream that a write deadline would truncate.
+// Request contexts derive from a context cancelled when shutdown begins, so open
+// SSE streams return at once instead of holding the drain until its timeout.
 func (s *Server) newHTTPServer() *http.Server {
-	return &http.Server{
-		Addr:              s.addr,
-		Handler:           s.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
+	srv := httpx.NewServer(s.addr, s.Handler())
+	reqCtx, cancel := context.WithCancel(context.Background())
+	srv.BaseContext = func(net.Listener) context.Context { return reqCtx }
+	srv.RegisterOnShutdown(cancel)
+	return srv
 }
 
-// Run serves until ctx is cancelled. It returns a non-nil error only on a real
-// bind/serve failure (never http.ErrServerClosed), so the caller can log it
+// Run serves until ctx is cancelled or the process is signalled. It returns a
+// non-nil error only on a real bind/serve failure, so the caller can log it
 // without taking down the headless service.
 func (s *Server) Run(ctx context.Context) error {
 	s.http = s.newHTTPServer()
 	go s.runSnapshotLoop(ctx)
-	errc := make(chan error, 1)
-	go func() {
-		if err := s.http.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errc <- err
-		}
-	}()
-	select {
-	case <-ctx.Done():
-		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_ = s.http.Shutdown(shutCtx)
-		return nil
-	case err := <-errc:
-		return err
-	}
+	return httpx.Serve(ctx, s.http, 3*time.Second)
 }

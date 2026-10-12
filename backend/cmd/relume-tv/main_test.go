@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -739,5 +740,60 @@ func TestNewTVServer_boundsStalledConnectionsButNeverTruncatesResponses(t *testi
 	}
 	if srv.WriteTimeout != 0 {
 		t.Errorf("WriteTimeout = %s; want 0 (a deadline would truncate a Pro-bound response)", srv.WriteTimeout)
+	}
+}
+
+func TestParseServeOptions_logLevelAndHealthcheck(t *testing.T) {
+	// Given: LOG_LEVEL is the default, the flag wins over it
+	t.Setenv("LOG_LEVEL", "warn")
+
+	// When
+	def, err := parseServeOptions(nil)
+	if err != nil {
+		t.Fatalf("parseServeOptions: %v", err)
+	}
+	set, err := parseServeOptions([]string{"-log-level", "debug", "-healthcheck"})
+	if err != nil {
+		t.Fatalf("parseServeOptions: %v", err)
+	}
+
+	// Then
+	if def.logLevel != "warn" || def.healthcheck {
+		t.Errorf("defaults: logLevel=%q healthcheck=%v, want warn/false", def.logLevel, def.healthcheck)
+	}
+	if set.logLevel != "debug" || !set.healthcheck {
+		t.Errorf("flags: logLevel=%q healthcheck=%v, want debug/true", set.logLevel, set.healthcheck)
+	}
+}
+
+func TestHealthcheckURL_probesTheTVServer(t *testing.T) {
+	// When: even headless, the TV-facing server is what the probe hits
+	got := healthcheckURL(serveOptions{httpPort: 8080, headless: true})
+
+	// Then
+	if got != "http://127.0.0.1:8080/healthz" {
+		t.Errorf("healthcheckURL = %q", got)
+	}
+}
+
+func TestTVHandler_servesProbesAndPassesTheRestToClip(t *testing.T) {
+	// Given
+	clip := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
+	h := tvHandler(clip, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	for path, want := range map[string]int{
+		"/healthz":          http.StatusOK,
+		"/readyz":           http.StatusOK,
+		"/description.xml":  http.StatusTeapot,
+		"/api/user/lights/": http.StatusTeapot,
+	} {
+		// When
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+
+		// Then
+		if rec.Code != want {
+			t.Errorf("GET %s = %d, want %d", path, rec.Code, want)
+		}
 	}
 }

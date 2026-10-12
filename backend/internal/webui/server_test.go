@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -144,5 +145,59 @@ func TestNewHTTPServerSetsHeaderTimeoutOnly(t *testing.T) {
 	}
 	if srv.Handler == nil {
 		t.Error("Handler is nil")
+	}
+}
+
+func TestServer_HealthProbes(t *testing.T) {
+	srv := NewServer(":0", NewHub(8), fakeSource{}, discardLog())
+	for _, path := range []string{"/healthz", "/readyz"} {
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200", path, rec.Code)
+		}
+	}
+}
+
+func TestServer_RunStopsWithOpenEventStream(t *testing.T) {
+	// Given: a running UI server with a connected SSE client
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	srv := NewServer(addr, NewHub(8), fakeSource{}, discardLog())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Run(ctx) }()
+	var resp *http.Response
+	for range 50 {
+		resp, err = http.Get("http://" + addr + "/api/events")
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// When
+	start := time.Now()
+	cancel()
+
+	// Then: the open stream ends with the server instead of holding the drain
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if d := time.Since(start); d > 2*time.Second {
+			t.Errorf("Run took %s to stop", d)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return")
 	}
 }
