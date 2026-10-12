@@ -142,8 +142,48 @@ func TestPairing_fromUnrecognizedAndroidDevice_stillFails(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatalf("decode pairing: %v", err)
 	}
-	if len(out) != 1 || out[0]["error"] == nil || out[0]["error"]["type"].(float64) != 101 {
+	if len(out) != 1 || out[0]["error"] == nil {
+		t.Fatalf("expected an error for non-TV Android device, got %v", out)
+	}
+	if typ, ok := out[0]["error"]["type"].(float64); !ok || typ != 101 {
 		t.Fatalf("expected error 101 for non-TV Android device, got %v", out)
+	}
+}
+
+// Other TP Vision platforms leave "Philips" and "TV" out of the User-Agent the same
+// way; a lookalike token that is not a platform code still fails.
+func TestIsTVRequest_tpmPlatformCodes(t *testing.T) {
+	srv, _ := newTestServer(t)
+	for ua, want := range map[string]bool{
+		"Dalvik/2.1.0 (Linux; U; Android 10; TPM171E Build/QTG3.200305.006)":  true,
+		"Dalvik/2.1.0 (Linux; U; Android 11; TPM211HE Build/RTT2.211108.001)": true,
+		"Dalvik/2.1.0 (Linux; U; Android 12; XTPM191E Build/ABC)":             false,
+		"Dalvik/2.1.0 (Linux; U; Android 12; TPM19 Build/ABC)":                false,
+		"Mozilla/5.0 (X11; Linux) TPM191E Build/ABC":                          false, // not Android
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/api", nil)
+		r.Header.Set("User-Agent", ua)
+		if got := srv.isTVRequest(r); got != want {
+			t.Errorf("isTVRequest(%q) = %v, want %v", ua, got, want)
+		}
+	}
+}
+
+func TestPairing_OnPair_firesOnFirstPairingOnly(t *testing.T) {
+	srv, ts := newTestServer(t)
+	fired := 0
+	srv.OnPair = func() { fired++ }
+	for range 2 { // the TV polls POST /api: the second call returns the existing user
+		resp := mustPostUA(t, ts.URL+"/api", `{"devicetype":"65PUS8535/12"}`, pus8535UserAgent)
+		resp.Body.Close()
+	}
+	if fired != 1 {
+		t.Fatalf("OnPair fired %d times, want 1", fired)
+	}
+	resp := mustPostUA(t, ts.URL+"/api", `{"devicetype":"phone"}`, "Dalvik/2.1.0 (Linux; U; Android 12; Pixel 8 Build/ABC)")
+	resp.Body.Close()
+	if fired != 1 {
+		t.Fatalf("OnPair fired for a refused pairing")
 	}
 }
 

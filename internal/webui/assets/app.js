@@ -249,7 +249,9 @@ const SETUP_STEPS = [
     title: "Disconnect the Hue Bridge Pro from power",
     body: (s) =>
       s.currentStep > 2
-        ? "Hue Bridge Pro is off — detected."
+        ? s.powerCycleSkipped
+          ? "Skipped — the TV is already paired."
+          : "Hue Bridge Pro is off — detected."
         : `Pull the power on the Hue Bridge Pro now. ${
             s.proReachable ? "We'll detect it (still reachable…)." : "We'll detect it."
           }`,
@@ -259,8 +261,10 @@ const SETUP_STEPS = [
   },
   {
     title: "Reboot your TV",
-    body: () =>
-      "On the TV: <b>Android Settings → Device Preferences → Restart</b>. After it boots, the TV re-detects relume-tv automatically.",
+    body: (s) =>
+      s.currentStep > 3 && s.powerCycleSkipped
+        ? "Not needed — the TV is already paired."
+        : "On the TV: <b>Android Settings → Device Preferences → Restart</b>. After it boots, the TV re-detects relume-tv automatically.",
     action: () =>
       `<div class="action"><span class="dot pulse"></span><div><div class="big">Waiting for the TV to reboot…</div></div></div>`,
   },
@@ -275,7 +279,9 @@ const SETUP_STEPS = [
     title: "Turn the Hue Bridge Pro back on",
     body: (s) =>
       s.currentStep > 5
-        ? "Hue Bridge Pro is back — detected."
+        ? s.powerCycleSkipped
+          ? "Not needed — the Hue Bridge Pro stayed on."
+          : "Hue Bridge Pro is back — detected."
         : "Plug the Hue Bridge Pro back in. relume-tv reconnects automatically.",
     action: () =>
       `<div class="action"><span class="dot pulse"></span><div><div class="big">Waiting for the Hue Bridge Pro…</div></div></div>`,

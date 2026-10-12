@@ -54,7 +54,8 @@ everything to CLIP v2 against the Pro.
 ## Pairing
 
 - **TV → relume-tv:** auto-accepted, no link button or UI. relume-tv only pairs the TV (by source IP
-  matching `-tv-ip`, or the Philips-TV Android/Dalvik User-Agent); other LAN devices get error
+  matching `-tv-ip`, or the Philips-TV Android/Dalvik User-Agent: "Philips"/"TV", or a TP Vision
+  platform code such as `TPM191E Build/` on models that send neither); other LAN devices get error
   101. `POST /api` is idempotent per devicetype (the TV polls it quickly).
 - **relume-tv → Bridge Pro:** automatic in `serve`, driven by the guided setup wizard in the web UI.
   If no Pro is paired, a background task discovers it via **local mDNS** (`_hue._tcp.local.`, picking

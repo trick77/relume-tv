@@ -151,12 +151,15 @@ func TestSetup_TVPairingSkipsMissedRebootSignal(t *testing.T) {
 		t.Fatalf("after Pro power-off step = %d, want reboot step", got)
 	}
 
-	// A real TV can fetch the descriptor with an unrecognised User-Agent but
-	// still complete the pairing handshake. Pairing must advance setup.
+	// The TV's descriptor fetch can be missed (fetched before step 3), but its
+	// pairing still proves it found this bridge. Pairing must advance setup.
 	pairTV(t, cfg)
 	st.recomputeNow()
 	if got := st.CurrentStep(); got != stepProPowerOn {
 		t.Fatalf("after TV pairing step = %d, want Pro power-on step", got)
+	}
+	if st.PowerCycleSkipped() {
+		t.Fatal("the Pro was powered off: the power cycle was not skipped")
 	}
 	if *commits != 0 {
 		t.Fatal("setup committed before the Pro returned and lights were driven")
@@ -186,9 +189,22 @@ func TestSetup_TVPairingBeforeProPairingSkipsPowerCycle(t *testing.T) {
 	if got := st.CurrentStep(); got != stepProPowerOn {
 		t.Fatalf("after both devices paired step = %d, want Pro power-on step", got)
 	}
+	if !st.PowerCycleSkipped() {
+		t.Fatal("TV paired before step 2: the power cycle must be reported as skipped")
+	}
 	st.setReachable(true)
 	if got := st.CurrentStep(); got != stepAssignBulbs || *commits != 0 {
 		t.Fatalf("with Pro reachable step = %d, commits = %d; want bulb assignment without commit", got, *commits)
+	}
+}
+
+func TestSetup_NoPairingNoSkip(t *testing.T) {
+	st, cfg, _, _ := newTestSetup(t)
+	pairPro(t, cfg)
+	st.recomputeNow()
+	st.setReachable(true)
+	if got := st.CurrentStep(); got != stepProPowerOff || st.PowerCycleSkipped() {
+		t.Fatalf("no TV paired: step = %d, skipped = %v; want power-off step, not skipped", got, st.PowerCycleSkipped())
 	}
 }
 

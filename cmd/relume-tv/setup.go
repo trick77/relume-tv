@@ -10,6 +10,8 @@ import (
 // The setup wizard's six steps. The state machine advances monotonically: a step is
 // left only when its own completion signal fires, never derived wholesale from a
 // snapshot (steps 3 and 5 are transitions, not stateless predicates — see recompute).
+// One exception: a paired TV is the signal for steps 2-4 at once (it has found this
+// bridge), so a TV that is already paired skips the power cycle (powerCycleSkipped).
 const (
 	stepPairPro     = 1 // pair the Hue Bridge Pro (proPaired)
 	stepProPowerOff = 2 // disconnect the Pro from power (reachable -> unreachable)
@@ -44,7 +46,7 @@ var setupTitles = map[int]string{
 // the Pro goes from reachable to unreachable (everReachable latches the first
 // confirmed-up so it cannot fire at t=0), and step 5 is evaluated only after step 3 has
 // completed (monotone gating), so neither flickers when a recompute runs while the Pro
-// is up.
+// is up. With the power cycle skipped, step 5 sees a Pro that never went down.
 type setupStatus struct {
 	mu sync.Mutex
 
@@ -69,6 +71,11 @@ type setupStatus struct {
 	// while step 2 is the active step (see markTVDescriptorSeen). A pre-step-2 probe (the
 	// TV polls the descriptor during ordinary Hue discovery) must not skip the reboot.
 	tvDescriptorSeen bool
+
+	// powerCycleSkipped: step 2 was left because a TV was already paired, so the Pro was
+	// never powered off; the UI says so instead of "off/back — detected". Any paired TV
+	// counts: relume-tv cannot tell which TV is being set up.
+	powerCycleSkipped bool
 
 	committed bool // the one-shot Commit has run
 
@@ -169,8 +176,15 @@ func (s *setupStatus) markTVDescriptorSeen() {
 	s.notifyChange()
 }
 
+// PowerCycleSkipped reports whether step 2 was skipped because a TV was already paired.
+func (s *setupStatus) PowerCycleSkipped() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.powerCycleSkipped
+}
+
 // recomputeNow re-evaluates the machine after an external signal changed (e.g. the Pro
-// was paired). Safe to call from any goroutine.
+// or the TV was paired). Safe to call from any goroutine.
 func (s *setupStatus) recomputeNow() {
 	s.mu.Lock()
 	s.recompute()
@@ -194,18 +208,18 @@ func (s *setupStatus) recompute() {
 			}
 		case stepProPowerOff:
 			// A paired TV has already discovered and linked this bridge, so the
-			// discovery power cycle is unnecessary. Otherwise wait for Pro off.
+			// discovery power cycle is unnecessary: steps 3 and 4 follow in this pass.
 			if tvPaired {
-				next = stepProPowerOn
+				s.powerCycleSkipped = true
+				s.log.Info("setup: a TV is already paired, skipping the Hue Bridge Pro power cycle")
+				next = stepRebootTV
 			} else if s.everReachable && !s.proReachable {
 				next = stepRebootTV
 			}
 		case stepRebootTV:
-			// Pairing proves the TV found this bridge even if its descriptor
-			// fetch was missed or its User-Agent was not recognized.
-			if tvPaired {
-				next = stepProPowerOn
-			} else if s.tvDescriptorSeen {
+			// Pairing proves the TV found this bridge even if its descriptor fetch
+			// was missed (fetched before step 3, or with a different User-Agent).
+			if tvPaired || s.tvDescriptorSeen {
 				next = stepTVScan
 			}
 		case stepTVScan:
@@ -213,7 +227,8 @@ func (s *setupStatus) recompute() {
 				next = stepProPowerOn
 			}
 		case stepProPowerOn:
-			// Only evaluated after the power-off step completed (monotone gating): the Pro is back.
+			// Only evaluated after the power-off step completed (monotone gating): the Pro is
+			// back, or, with the power cycle skipped, still up.
 			if s.proReachable {
 				next = stepAssignBulbs
 			}
