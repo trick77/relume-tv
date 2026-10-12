@@ -5,7 +5,7 @@ go 1.27.2
 require (
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/pion/dtls/v3 v3.1.4
-	github.com/trick77/ship/kit v0.2.0
+	github.com/trick77/ship/kit v0.3.0
 )
 
 require (
