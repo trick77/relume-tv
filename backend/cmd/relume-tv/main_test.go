@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -839,5 +841,37 @@ func TestTVServeError_drainTimeoutIsNotFatal(t *testing.T) {
 	}
 	if err := tvServeError(nil, log); err != nil {
 		t.Errorf("clean stop = %v, want nil", err)
+	}
+}
+
+func TestTVHandler_skipsSuccessfulTVLightTrafficInTheAccessLog(t *testing.T) {
+	// Given: clip answers with the status the test sets per request
+	status := http.StatusOK
+	clip := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) })
+	var buf bytes.Buffer
+	h := tvHandler(clip, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	for _, tc := range []struct {
+		method, path string
+		status       int
+		logged       bool
+	}{
+		{http.MethodPut, "/api/tv/lights/1/state", http.StatusOK, false},
+		{http.MethodPut, "/api/tv/groups/2/action", http.StatusOK, false},
+		{http.MethodGet, "/api/tv/lights/1", http.StatusOK, false},
+		{http.MethodPut, "/api/tv/lights/1/state", http.StatusBadGateway, true},
+		{http.MethodPut, "/api/tv/lights/1/state", http.StatusBadRequest, true},
+		{http.MethodGet, "/api/tv/lights", http.StatusOK, true},
+		{http.MethodGet, "/description.xml", http.StatusOK, true},
+	} {
+		// When
+		buf.Reset()
+		status = tc.status
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(tc.method, tc.path, nil))
+
+		// Then
+		if got := strings.Contains(buf.String(), "http_request"); got != tc.logged {
+			t.Errorf("%s %s -> %d: logged=%v, want %v", tc.method, tc.path, tc.status, got, tc.logged)
+		}
 	}
 }

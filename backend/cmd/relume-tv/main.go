@@ -244,17 +244,29 @@ func healthcheckURL(opts serveOptions) string {
 // tvHandler mounts the liveness/readiness probes in front of the CLIP v1 API. They
 // sit outside clip's handler so a container probe never shows up in its request log.
 // No readiness checks: relume-tv is useful (discoverable, pairable) before the Pro is.
-// kit's access log (routine requests at debug, probes quiet) and panic recovery wrap
-// both; clip's own logRequests stays the info-level, rolled-up TV traffic log.
+// kit's access log (routine requests at debug, probes and successful TV light
+// traffic skipped) and panic recovery wrap both; clip's own logRequests stays the
+// info-level, rolled-up TV traffic log.
 func tvHandler(clip http.Handler, log *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 	httpx.Health(mux, log)
 	mux.Handle("/", clip)
 	// AccessLog outermost, so a recovered panic's 500 carries the request id.
 	return httpx.Chain(mux,
-		httpx.AccessLog(log, httpx.AccessLogOptions{Quiet: []string{"/healthz", "/readyz"}}),
+		httpx.AccessLog(log, httpx.AccessLogOptions{
+			Quiet: []string{"/healthz", "/readyz"},
+			Skip:  skipTVTraffic,
+		}),
 		httpx.Recover(log),
 	)
+}
+
+// skipTVTraffic drops the access line of a successful high-frequency TV request
+// (light/group writes, light polls: many per second, already in clip's rollup), so
+// neither the access log nor the web UI's live log floods. A 4xx or 5xx on those
+// paths is still logged.
+func skipTVTraffic(r *http.Request, status int) bool {
+	return status < 400 && clipv1.IsHighFrequency(r)
 }
 
 // serveContext is serve's root context: it ends on SIGINT/SIGTERM (kit/run) or on
