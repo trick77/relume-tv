@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/trick77/ship/kit/fsx"
+
 	"github.com/trick77/relume-tv/internal/netutil"
 )
 
@@ -146,9 +148,9 @@ type Config struct {
 func Load(path string) (*Config, error) {
 	c := &Config{path: path, APIUsers: map[string]*APIUser{}}
 
-	// Clean up an orphaned temp file from a previous crashed/failed save so it never
-	// lingers as garbage next to the real config. Best-effort.
-	_ = os.Remove(path + ".tmp")
+	// Clean up orphaned temp files from a previous crashed save so they never linger
+	// as garbage next to the real config. Best-effort.
+	removeTempFiles(path)
 
 	// G304: path is the config location, chosen by the operator via flag or
 	// the default under the user's home. No request data reaches it.
@@ -351,48 +353,20 @@ func (c *Config) save() error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
-	tmp := c.path + ".tmp"
-	if err := writeFileSync(tmp, data); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, c.path); err != nil {
-		_ = os.Remove(tmp) // don't leave a half-written temp behind
-		return err
-	}
-	return fsyncDir(dir)
+	return fsx.WriteFileAtomic(c.path, data, 0o600)
 }
 
-// writeFileSync writes data to path (0600) and fsyncs it before returning, so the
-// bytes are on disk before the caller renames it into place.
-func writeFileSync(path string, data []byte) error {
-	//nolint:gosec // G304: operator-chosen config path, as in Load
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
+// removeTempFiles deletes the temp files a crashed save can leave beside path:
+// fsx.WriteFileAtomic's ".<name>.tmp-*" and the "<name>.tmp" of earlier releases.
+func removeTempFiles(path string) {
+	_ = os.Remove(path + ".tmp")
+	dir, base := filepath.Split(path)
+	entries, _ := os.ReadDir(filepath.Clean(dir))
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "."+base+".tmp-") {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
 	}
-	if _, werr := f.Write(data); werr != nil {
-		_ = f.Close()
-		return werr
-	}
-	if serr := f.Sync(); serr != nil {
-		_ = f.Close()
-		return serr
-	}
-	return f.Close()
-}
-
-// fsyncDir flushes a directory entry (the rename) to disk. A failure to open/sync the
-// directory is non-fatal on platforms that don't support it; the rename itself already
-// succeeded, so a best-effort sync is enough.
-func fsyncDir(dir string) error {
-	//nolint:gosec // G304: the config directory, from the operator-chosen path
-	d, err := os.Open(dir)
-	if err != nil {
-		return nil //nolint:nilerr // directory fsync is best-effort
-	}
-	defer func() { _ = d.Close() }()
-	_ = d.Sync()
-	return nil
 }
 
 // hostMAC is the primary-MAC lookup used by deriveSerial; a package variable so

@@ -144,8 +144,8 @@ func TestSave_writesModeAndLeavesNoTempFile(t *testing.T) {
 		t.Errorf("config mode = %o, want 600", perm)
 	}
 	// The atomic write renames its temp file into place; nothing may linger.
-	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
-		t.Errorf("a .tmp file was left behind (stat err = %v)", err)
+	if left := tempFiles(t, path); len(left) > 0 {
+		t.Errorf("temp files left behind: %v", left)
 	}
 }
 
@@ -209,13 +209,33 @@ func TestSave_createsTheParentDirectory(t *testing.T) {
 	}
 }
 
-func TestSave_surfacesAWriteFailure(t *testing.T) {
-	// Given: a committed config, then a DIRECTORY squatting on the temp-file path
-	// the atomic write needs. Opening it for writing must fail.
-	c, path := committedConfig(t)
-	if err := os.Mkdir(path+".tmp", 0o755); err != nil {
-		t.Fatalf("squat on the temp path: %v", err)
+// tempFiles lists what the atomic write may leave beside path: fsx's
+// ".<name>.tmp-*" and the legacy "<name>.tmp".
+func tempFiles(t *testing.T, path string) []string {
+	t.Helper()
+	dir, base := filepath.Split(path)
+	matches, err := filepath.Glob(filepath.Join(dir, "."+base+".tmp-*"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
 	}
+	if _, err := os.Stat(path + ".tmp"); err == nil {
+		matches = append(matches, path+".tmp")
+	}
+	return matches
+}
+
+func TestSave_surfacesAWriteFailure(t *testing.T) {
+	// Given: a committed config in a directory that no longer accepts new files,
+	// so the atomic write cannot create its temp file
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	c, path := committedConfig(t)
+	dir := filepath.Dir(path)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 
 	// When
 	err := c.AddAPIUser(&APIUser{Username: "tv", DeviceType: "Philips#TV"})
@@ -249,82 +269,8 @@ func TestSave_failedRenameLeavesNoTempFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the rename to fail")
 	}
-	if _, statErr := os.Stat(path + ".tmp"); !os.IsNotExist(statErr) {
-		t.Errorf("a temp file was left behind after a failed rename (stat err = %v)", statErr)
-	}
-}
-
-func TestWriteFileSync_writesExactBytesAt0600(t *testing.T) {
-	// Given
-	path := filepath.Join(t.TempDir(), "out.bin")
-	data := []byte("relume-tv\x00binary\xffpayload")
-
-	// When
-	if err := writeFileSync(path, data); err != nil {
-		t.Fatalf("writeFileSync: %v", err)
-	}
-
-	// Then
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read back: %v", err)
-	}
-	if !bytes.Equal(got, data) {
-		t.Fatalf("round-trip mismatch: % x", got)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("mode = %o, want 600", perm)
-	}
-}
-
-func TestWriteFileSync_truncatesAnExistingLongerFile(t *testing.T) {
-	// Given: an existing file longer than the new contents. Without O_TRUNC the
-	// tail of the old config would survive and corrupt the JSON.
-	path := filepath.Join(t.TempDir(), "out.json")
-	if err := os.WriteFile(path, []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 0o600); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-
-	// When
-	if err := writeFileSync(path, []byte("short")); err != nil {
-		t.Fatalf("writeFileSync: %v", err)
-	}
-
-	// Then
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read back: %v", err)
-	}
-	if string(got) != "short" {
-		t.Fatalf("got %q, want %q — the file was not truncated", got, "short")
-	}
-}
-
-func TestWriteFileSync_reportsAnUnopenablePath(t *testing.T) {
-	// Given: a path whose parent directory does not exist
-	path := filepath.Join(t.TempDir(), "missing-dir", "out.bin")
-
-	// When
-	err := writeFileSync(path, []byte("x"))
-
-	// Then
-	if err == nil {
-		t.Fatal("expected an error for an unopenable path")
-	}
-}
-
-func TestFsyncDir_toleratesAMissingDirectory(t *testing.T) {
-	// Given / When: the directory fsync is documented as best-effort, because some
-	// platforms cannot sync a directory handle at all
-	err := fsyncDir(filepath.Join(t.TempDir(), "does-not-exist"))
-
-	// Then
-	if err != nil {
-		t.Fatalf("fsyncDir must stay best-effort, got %v", err)
+	if left := tempFiles(t, path); len(left) > 0 {
+		t.Errorf("temp files left behind after a failed rename: %v", left)
 	}
 }
 
