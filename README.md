@@ -102,8 +102,8 @@ State (bridge identity, TV tokens, **Bridge Pro app key + client key**) lives in
 ## Development
 
 ```bash
-go build -o relume-tv ./cmd/relume-tv
-go test ./...
+make build   # copies ui/ into backend/web/dist, then builds ./relume-tv
+make test
 ```
 
 The full gate is [ship](https://github.com/trick77/ship) (`ship.yaml`): build, lint, tests with coverage, commit

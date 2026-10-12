@@ -1,0 +1,7 @@
+# The local embed copy (make ui) must not reach the image: the build copies ui/ fresh.
+backend/web/dist
+**/.DS_Store
+.git
+.claude
+relume-tv
+dist

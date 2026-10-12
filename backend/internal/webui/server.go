@@ -2,16 +2,18 @@ package webui
 
 import (
 	"context"
-	"embed"
 	"encoding/json"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/trick77/relume-tv/web"
 )
 
-//go:embed assets/*
-var assetsFS embed.FS
+// notBuiltPage answers / when the binary was built without the UI copied into
+// web/dist (a bare `go build` on a fresh clone), instead of a bare 404.
+const notBuiltPage = `<!doctype html><title>relume-tv</title><p>Web UI not built into this binary. Run <code>make build</code>.</p>`
 
 // Server is the web UI HTTP server. It is separate from the TV-facing clipv1
 // server and runs by default (suppressed by -headless).
@@ -22,6 +24,7 @@ type Server struct {
 	log          *slog.Logger
 	http         *http.Server
 	snapInterval time.Duration
+	assets       fs.FS // nil = the embedded UI; tests swap in an empty one
 }
 
 // NewServer builds the UI server.
@@ -62,8 +65,21 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/state", s.handleState)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 
-	sub, _ := fs.Sub(assetsFS, "assets")
-	mux.Handle("/", http.FileServer(http.FS(sub)))
+	assets := s.assets
+	if assets == nil {
+		assets = web.FS()
+	}
+	if _, err := fs.Stat(assets, "index.html"); err != nil {
+		if s.log != nil {
+			s.log.Warn("web UI not built into this binary; serving a placeholder (build with `make build`)")
+		}
+		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(notBuiltPage))
+		})
+		return mux
+	}
+	mux.Handle("/", http.FileServer(http.FS(assets)))
 	return mux
 }
 

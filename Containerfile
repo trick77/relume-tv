@@ -2,9 +2,11 @@
 # arm64 image's compile).
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 WORKDIR /src
-COPY go.mod go.sum ./
+COPY backend/go.mod backend/go.sum ./
 RUN go mod download
-COPY . .
+COPY backend/ ./
+# go:embed cannot reach outside the module: the UI lands in its embed dir here.
+COPY ui/ ./web/dist/
 # VERSION: ship release passes the release version. TARGETOS/TARGETARCH: set by buildx per platform.
 ARG VERSION=dev
 ARG TARGETOS TARGETARCH

@@ -32,6 +32,8 @@ everything to CLIP v2 against the Pro.
 
 ## Components
 
+Go packages live under `backend/`.
+
 **Frontend (TV-facing, emulates BSB002):**
 - `internal/ssdp` — multicast responder (M-SEARCH) + periodic NOTIFY ssdp:alive.
 - `internal/mdns` — active `_hue._tcp` announcer (`Philips Hue - XXXXXX`, TXT bridgeid + modelid=BSB002).
@@ -120,10 +122,10 @@ port (must differ from the TV-facing `-http-port`), and `-headless` disables it 
 no authentication, so under `network_mode: host` it is reachable by anyone on the LAN — run
 `-headless` on untrusted networks. Design notes:
 
-- **Embedded, no build step.** Static HTML/CSS/JS compiled into the binary via `go:embed`
-  (`internal/webui/assets`). No npm/Node/framework.
+- **Embedded, no toolchain.** Static HTML/CSS/JS in `ui/`, copied into `backend/web/dist` by
+  `make ui` and compiled into the binary via `go:embed`. No npm/Node/framework.
 - **Read-mostly.** The UI reads live state through a `webui.StateSource` adapter
-  (`cmd/relume-tv/uisource.go`) — the TV- and Pro-facing control paths are never modified. The only
+  (`backend/cmd/relume-tv/uisource.go`) — the TV- and Pro-facing control paths are never modified. The only
   action is a test flash.
 - **State delivery.** `GET /api/state` returns a JSON snapshot; `GET /api/events` is a
   Server-Sent Events stream pushing snapshot updates plus a live log tail. The log tail is

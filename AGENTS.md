@@ -1,14 +1,16 @@
 # AGENTS.md — relume-tv
 
-Module `github.com/trick77/relume-tv`. Binary `relume-tv` (`cmd/relume-tv`).
+Module `github.com/trick77/relume-tv`. Binary `relume-tv` (`backend/cmd/relume-tv`).
+Go module in `backend/`, web UI sources (vanilla HTML/JS/CSS, no node) in `ui/`.
 Emulates a gen-2 Hue Bridge (BSB002) toward a Philips Ambilight TV; proxies to a real Hue
 Bridge Pro (BSB003) via CLIP v2.
 
 All repo content (docs, code comments, logs) is English.
 
 ## build/test
-- `go build -o relume-tv ./cmd/relume-tv`
-- `go test ./...`
+- `make build` / `make test` from the repo root. Both run `make ui` first: go:embed can't reach
+  `../ui`, so it copies `ui/` into `backend/web/dist` (gitignored, only `.gitkeep` tracked). Bare
+  `go test` in `backend/` without it fails the asset tests on purpose; ship runs it as a `steps:` entry.
 - diagnostics: `relume-tv serve -debug` (SSDP header log + mDNS observer + HTTP body log);
   `-disable-ssdp` runs mDNS-only (like ha-hue-entertainment) to isolate SSDP from discovery
 - modes: `-mode entertainment` (DEFAULT) or `-mode rest` (explicit fallback; relume-tv gives the
@@ -57,7 +59,7 @@ All repo content (docs, code comments, logs) is English.
 - mDNS announce MUST register exactly once and NEVER re-register/re-announce via
   `Server.Shutdown()`: grandcat/zeroconf's Shutdown multicasts an mDNS goodbye (TTL 0) that evicts
   relume-tv from the TV's cache → bridge flickers out of the Ambilight list. This (not the descriptor)
-  was the real discovery bug; fixed in `internal/mdns/announce.go`.
+  was the real discovery bug; fixed in `backend/internal/mdns/announce.go`.
 - Measured (65OLED806/Android 11): the TV actively queries `_hue._tcp` then fetches plain
   `/description.xml`; NO hue SSDP M-SEARCH (only `MediaServer`), NO cloud. So mDNS announce is the
   PRIMARY path. Working ref = hass-emulated-hue: instance name exactly `Philips Hue - XXXXXX` (last 6
