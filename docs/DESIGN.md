@@ -32,6 +32,8 @@ everything to CLIP v2 against the Pro.
 
 ## Components
 
+Go packages live under `backend/`.
+
 **Frontend (TV-facing, emulates BSB002):**
 - `internal/ssdp` — multicast responder (M-SEARCH) + periodic NOTIFY ssdp:alive.
 - `internal/mdns` — active `_hue._tcp` announcer (`Philips Hue - XXXXXX`, TXT bridgeid + modelid=BSB002).

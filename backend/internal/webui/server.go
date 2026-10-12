@@ -70,6 +70,9 @@ func (s *Server) Handler() http.Handler {
 		assets = web.FS()
 	}
 	if _, err := fs.Stat(assets, "index.html"); err != nil {
+		if s.log != nil {
+			s.log.Warn("web UI not built into this binary; serving a placeholder (build with `make build`)")
+		}
 		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			_, _ = w.Write([]byte(notBuiltPage))
