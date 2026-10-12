@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/trick77/relume-tv/internal/config"
@@ -121,20 +122,18 @@ func TestSearchResponses_answerOnlyOwnSearchTargets(t *testing.T) {
 }
 
 func TestRunBurst_sendsImmediatelyAndOnIntervalUntilDuration(t *testing.T) {
-	// Given
-	ctx := context.Background()
-	count := 0
+	synctest.Test(t, func(t *testing.T) {
+		// Given
+		count := 0
 
-	// When
-	runBurst(ctx, 10*time.Millisecond, 35*time.Millisecond, func() {
-		count++
+		// When
+		runBurst(context.Background(), 10*time.Millisecond, 35*time.Millisecond, func() {
+			count++
+		})
+
+		// Then: one immediate send, then at 10ms/20ms/30ms on the bubble's fake clock.
+		if count != 4 {
+			t.Fatalf("burst count = %d, want 4", count)
+		}
 	})
-
-	// Then: one immediate send, then roughly at 10ms/20ms/30ms.
-	if count < 4 {
-		t.Fatalf("burst count = %d, expected at least 4", count)
-	}
-	if count > 5 {
-		t.Fatalf("burst count = %d, expected no more than 5", count)
-	}
 }
