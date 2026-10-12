@@ -1,0 +1,7 @@
+# The gate (ship check, and ship pre-push in the hook) and the release, see github.com/trick77/ship.
+go:
+  # Attributes coverage across package boundaries.
+  coverpkg: ./...
+images:
+  # The TV-side hosts run both: x86 NAS/servers and Raspberry Pi-class boards.
+  - platforms: [linux/amd64, linux/arm64]

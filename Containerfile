@@ -4,9 +4,10 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-ARG RELUME_TV_VERSION=dev
+# VERSION: ship release passes the release version.
+ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath \
-    -ldflags="-s -w -X main.version=${RELUME_TV_VERSION}" -o /relume-tv ./cmd/relume-tv
+    -ldflags="-s -w -X main.version=${VERSION}" -o /relume-tv ./cmd/relume-tv
 
 # Runtime: slim image with CA certs (for cloud discovery via HTTPS)
 FROM alpine:3.20

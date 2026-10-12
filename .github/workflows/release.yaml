@@ -1,27 +1,9 @@
 name: Release
 
+# By hand only. Next plain tag from the bump, the multi-arch image (ship.yaml images) pushed to ghcr.io with its
+# version, sha and moving tags, then the GitHub release.
+# gh workflow run Release -f bump=patch
 on:
-  push:
-    branches: [master]
-    # Only cut a release when something that ships actually changed. Without this,
-    # a licence file, a .gitignore line or a comment fix each cut a full version,
-    # multi-arch image build, GHCR push, git tag and GitHub release.
-    #
-    # This is an ignore-list rather than an allow-list on purpose: a new top-level
-    # directory starts out releasing, which is the safe default. Forgetting to add
-    # a path here costs a redundant release; forgetting to remove one would
-    # silently skip a needed release.
-    #
-    # workflow_dispatch below is unfiltered, so a release can always be forced by
-    # hand — including after a change to this workflow, which .github/** ignores.
-    paths-ignore:
-      - "docs/**"
-      - "scripts/**"
-      - ".github/**"
-      - "**/*.md"
-      - "LICENSE"
-      - ".gitignore"
-      - "compose*.yaml"
   workflow_dispatch:
     inputs:
       bump:
@@ -30,95 +12,11 @@ on:
         options: [patch, minor, major]
         default: patch
 
-permissions:
-  contents: write
-  packages: write
-
-concurrency:
-  group: release
-  cancel-in-progress: false
-
 jobs:
   release:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - id: ver
-        name: Compute next version
-        run: |
-          BUMP="${{ github.event.inputs.bump || 'patch' }}"
-          LATEST=$(git tag --list '[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
-          LATEST="${LATEST:-0.0.0}"
-          IFS=. read -r MA MI PA <<< "$LATEST"
-          case "$BUMP" in
-            major) MA=$((MA+1)); MI=0; PA=0 ;;
-            minor) MI=$((MI+1)); PA=0 ;;
-            patch) PA=$((PA+1)) ;;
-          esac
-          NEXT="$MA.$MI.$PA"
-          SHORT=$(git rev-parse --short HEAD)
-          # GHCR repository names must be lowercase; lowercase the repo slug defensively
-          # so the image ref stays valid regardless of how the owner/repo is cased.
-          IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
-          echo "version=$NEXT" >> "$GITHUB_OUTPUT"
-          echo "major=$MA"     >> "$GITHUB_OUTPUT"
-          echo "minor=$MI"     >> "$GITHUB_OUTPUT"
-          echo "short=$SHORT"  >> "$GITHUB_OUTPUT"
-          echo "image=$IMAGE"  >> "$GITHUB_OUTPUT"
-          echo "Bumping $LATEST -> $NEXT ($BUMP) at $SHORT" >> "$GITHUB_STEP_SUMMARY"
-
-      - uses: docker/setup-qemu-action@v4
-
-      - uses: docker/setup-buildx-action@v4
-
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./Containerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          build-args: |
-            RELUME_TV_VERSION=${{ steps.ver.outputs.version }}
-          tags: |
-            ${{ steps.ver.outputs.image }}:${{ steps.ver.outputs.version }}
-            ${{ steps.ver.outputs.image }}:${{ steps.ver.outputs.major }}.${{ steps.ver.outputs.minor }}
-            ${{ steps.ver.outputs.image }}:${{ steps.ver.outputs.major }}
-            ${{ steps.ver.outputs.image }}:${{ steps.ver.outputs.short }}
-            ${{ steps.ver.outputs.image }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # The tag is created only AFTER the image push succeeded. It used to be
-      # created before the build, so a failed build left an orphan tag behind —
-      # and because the next run derives its version from the newest existing
-      # tag, that version number was burned permanently.
-      #
-      # Both `git tag` + `git push` and the REST create-ref below work. create-ref
-      # is used because it needs no git credentials configured in the checkout and
-      # is a single atomic call, and because every repo in this family uses it, so
-      # the release workflows stay directly comparable.
-      - name: Create tag
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh api "repos/${{ github.repository }}/git/refs" \
-            -f ref="refs/tags/${{ steps.ver.outputs.version }}" \
-            -f sha="${{ github.sha }}"
-
-      - name: Create release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION="${{ steps.ver.outputs.version }}"
-          gh release create "$VERSION" \
-            --title "$VERSION" \
-            --notes "Container image: \`ghcr.io/${{ github.repository }}:$VERSION\`"
+    uses: trick77/ship/.github/workflows/release.yaml@master
+    with:
+      bump: ${{ inputs.bump }}
+    permissions:
+      contents: write
+      packages: write

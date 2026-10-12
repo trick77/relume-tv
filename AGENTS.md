@@ -84,7 +84,10 @@ All repo content (docs, code comments, logs) is English.
 ## deployment
 - needs same L2 as TV (SSDP+mDNS multicast) → Docker `network_mode: host`.
 - rootless can't bind <1024. If TV hardcodes API port 80 (unconfirmed; SRV/LOCATION port may be honored instead), use host `sysctl net.ipv4.ip_unprivileged_port_start=80`, NOT a root container.
-- CI: push/PR to master runs tests; push to master builds+pushes image to ghcr.io/trick77/relume-tv (semver tag auto-bumped).
+- Gate: `ship check` ([ship](https://github.com/trick77/ship), `ship.yaml`); `ship hooks` once per clone runs it
+  on every push. CI and release by hand only: `gh workflow run CI --ref <branch>` (a fork PR has no hook: run it
+  before merging), `gh workflow run Release -f bump=patch` (plain tag, amd64+arm64 image to ghcr.io).
+- Commit subjects + PR titles: Go style `area: what` (`setup: …`, `clipv1: …`), gated by ship; release notes list them by area.
 
 ## toolchain trap
 - go 1.26 + grandcat/zeroconf v1.0.0 pulls ancient golang.org/x/net that fails to link (`syscall.recvmsg`). Keep x/net, x/sys, x/crypto upgraded.
