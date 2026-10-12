@@ -62,8 +62,18 @@ func (s *Server) runSnapshotLoop(ctx context.Context) {
 	}
 }
 
-// Handler returns the routed HTTP handler.
+// Handler returns the routed HTTP handler behind kit's access log (routine requests
+// at debug, probes quiet) and panic recovery. AccessLog is outermost, so a recovered
+// panic's 500 carries the request id; its writer passes Flush through, so the
+// /api/events stream still streams.
 func (s *Server) Handler() http.Handler {
+	return httpx.Chain(s.routes(),
+		httpx.AccessLog(s.log, httpx.AccessLogOptions{Quiet: []string{"/healthz", "/readyz"}}),
+		httpx.Recover(s.log),
+	)
+}
+
+func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/state", s.handleState)
 	mux.HandleFunc("GET /api/events", s.handleEvents)

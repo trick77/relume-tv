@@ -244,11 +244,17 @@ func healthcheckURL(opts serveOptions) string {
 // tvHandler mounts the liveness/readiness probes in front of the CLIP v1 API. They
 // sit outside clip's handler so a container probe never shows up in its request log.
 // No readiness checks: relume-tv is useful (discoverable, pairable) before the Pro is.
+// kit's access log (routine requests at debug, probes quiet) and panic recovery wrap
+// both; clip's own logRequests stays the info-level, rolled-up TV traffic log.
 func tvHandler(clip http.Handler, log *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 	httpx.Health(mux, log)
 	mux.Handle("/", clip)
-	return mux
+	// AccessLog outermost, so a recovered panic's 500 carries the request id.
+	return httpx.Chain(mux,
+		httpx.AccessLog(log, httpx.AccessLogOptions{Quiet: []string{"/healthz", "/readyz"}}),
+		httpx.Recover(log),
+	)
 }
 
 // serveContext is serve's root context: it ends on SIGINT/SIGTERM (kit/run) or on
