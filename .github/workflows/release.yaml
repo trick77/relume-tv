@@ -1,8 +1,8 @@
 name: Release
 
-# By hand only. Next plain tag from the bump, the multi-arch image (ship.yaml images) pushed to ghcr.io with its
-# version, sha and moving tags, then the GitHub release.
-# gh workflow run Release -f bump=patch
+# By hand only (Actions minutes): gh workflow run Release -f bump=patch. auto: patch, or what the commits since the
+# last tag ask for (Release: minor|major). The only way to release: images are built and signed on GitHub-hosted
+# runners, never from a laptop.
 on:
   workflow_dispatch:
     inputs:
@@ -21,3 +21,5 @@ jobs:
     permissions:
       contents: write
       packages: write
+      # cosign keyless signing: the job's OIDC token is the signing identity.
+      id-token: write
