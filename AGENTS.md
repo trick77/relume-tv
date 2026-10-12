@@ -85,8 +85,9 @@ All repo content (docs, code comments, logs) is English.
 - needs same L2 as TV (SSDP+mDNS multicast) → Docker `network_mode: host`.
 - rootless can't bind <1024. If TV hardcodes API port 80 (unconfirmed; SRV/LOCATION port may be honored instead), use host `sysctl net.ipv4.ip_unprivileged_port_start=80`, NOT a root container.
 - Gate: `ship check` ([ship](https://github.com/trick77/ship), `ship.yaml`); `ship hooks` once per clone runs it
-  on every push. CI and release by hand only: `gh workflow run CI --ref <branch>` (a fork PR has no hook: run it
-  before merging), `gh workflow run Release -f bump=patch` (plain tag, amd64+arm64 image to ghcr.io).
+  on every push. CI and release by hand only: `gh workflow run CI --ref <branch>`, `gh workflow run Release -f
+  bump=patch` (plain tag, amd64+arm64 image to ghcr.io). A fork PR has no hook and dispatch sees only this repo's
+  branches: `git push origin pull/<n>/head:refs/heads/pr-<n>`, dispatch CI on `pr-<n>`, delete it after.
 - Commit subjects + PR titles: Go style `area: what` (`setup: …`, `clipv1: …`), gated by ship; release notes list them by area.
 
 ## toolchain trap

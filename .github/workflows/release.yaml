@@ -9,7 +9,7 @@ on:
       bump:
         description: "Version bump"
         type: choice
-        options: [patch, minor, major]
+        options: [patch, minor, major, auto]
         default: patch
 
 jobs:
