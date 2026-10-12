@@ -1,6 +1,6 @@
 # Binaries
 /relume-tv
-/cmd/relume-tv/relume-tv
+/backend/cmd/relume-tv/relume-tv
 
 # Laufzeit-Zustand
 *.json.tmp
@@ -25,3 +25,7 @@ coverage.out
 .DS_Store
 
 .playwright-mcp/
+
+# The UI copied into the embed dir (make ui); only .gitkeep is tracked.
+backend/web/dist/*
+!backend/web/dist/.gitkeep

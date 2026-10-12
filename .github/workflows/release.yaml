@@ -17,6 +17,7 @@ jobs:
     uses: trick77/ship/.github/workflows/release.yaml@master
     with:
       bump: ${{ inputs.bump }}
+      go-dir: backend
     permissions:
       contents: write
       packages: write

@@ -1,7 +1,11 @@
 # The gate (ship check, and ship pre-push in the hook) and the release, see github.com/trick77/ship.
 go:
+  dir: backend
   # Attributes coverage across package boundaries.
   coverpkg: ./...
 images:
   # The TV-side hosts run both: x86 NAS/servers and Raspberry Pi-class boards.
   - platforms: [linux/amd64, linux/arm64]
+steps:
+  # go:embed cannot reach ../ui: the asset tests read the copy in backend/web/dist.
+  - { name: ui sync, run: make ui }
