@@ -1,10 +1,10 @@
 name: CI
 
-# By hand only: the pre-push hook runs the same gate, ship check, before every push.
-# gh workflow run CI --ref <branch>
-# A fork PR has no hook, and dispatch only sees this repo's branches: push its head here first.
-# git push origin pull/<n>/head:refs/heads/pr-<n> && gh workflow run CI --ref pr-<n>
+# Every pull request, fork PRs included (read-only token, no secrets): Dependabot and outside contributors have no
+# pre-push hook. Own pushes are gated by the hook already. By hand: gh workflow run CI --ref <branch>
 on:
+  pull_request:
+    branches: [master]
   workflow_dispatch:
 
 permissions:
