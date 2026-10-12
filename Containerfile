@@ -15,7 +15,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
 
 # Runtime: distroless static, as root (ship.yaml allow): host networking binds :80 and existing installs keep
 # a root-owned /data volume.
-FROM gcr.io/distroless/static-debian13
+FROM gcr.io/distroless/static-debian13:latest@sha256:58133991db06659feaabe0f4e97a35cebf15ef4ea08f8a4c6d2ee5f75e4aa6a0
 COPY --from=build /relume-tv /usr/local/bin/relume-tv
 VOLUME /data
 # WORKDIR=/data, so the default config (relume-tv.json) already lands in the volume.
