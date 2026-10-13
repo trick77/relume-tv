@@ -841,7 +841,7 @@ func autoPairPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, c
 		}
 		// mDNS is local and unthrottled, so we can retry briskly while the user powers on
 		// or connects the bridge.
-		if !sleepCtx(ctx, 10*time.Second) {
+		if !run.Sleep(ctx, 10*time.Second) {
 			return
 		}
 	}
@@ -862,7 +862,7 @@ func autoPairPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, c
 			break
 		}
 		log.Warn("hue bridge pro not paired yet: cannot reach it to pin its certificate — power the hue bridge pro on; retrying", "host", host, "err", ferr)
-		if !sleepCtx(ctx, 15*time.Second) {
+		if !run.Sleep(ctx, 15*time.Second) {
 			return
 		}
 	}
@@ -915,16 +915,6 @@ func reconnectProConfig(old *config.BridgePro, host, certSHA256 string, skipTLS 
 		Name:          old.Name,
 		BridgeID:      old.BridgeID,
 		DiscoveryID:   old.DiscoveryID,
-	}
-}
-
-// sleepCtx sleeps for d or until ctx is cancelled; returns false if cancelled.
-func sleepCtx(ctx context.Context, d time.Duration) bool {
-	select {
-	case <-ctx.Done():
-		return false
-	case <-time.After(d):
-		return true
 	}
 }
 

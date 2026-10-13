@@ -11,6 +11,8 @@ import (
 	"github.com/trick77/relume-tv/internal/bridgepro"
 	"github.com/trick77/relume-tv/internal/clipv1"
 	"github.com/trick77/relume-tv/internal/config"
+
+	"github.com/trick77/ship/kit/run"
 )
 
 // Setup precondition sentinels for the initial pairing selection (selectProForPairing).
@@ -219,7 +221,7 @@ func (w *proWatcher) run(ctx context.Context) {
 	if w.cfg.GetPro() == nil {
 		return
 	}
-	for sleepCtx(ctx, w.checkInterval()) {
+	for run.Sleep(ctx, w.checkInterval()) {
 		w.tick()
 	}
 }
