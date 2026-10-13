@@ -201,20 +201,6 @@ func TestReconnectProConfig_skipTLSIsSticky(t *testing.T) {
 	}
 }
 
-func TestSleepCtx_returnsFalseWhenCancelled(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if sleepCtx(ctx, time.Hour) {
-		t.Fatal("sleepCtx returned true for a cancelled context")
-	}
-}
-
-func TestSleepCtx_returnsTrueAfterDelay(t *testing.T) {
-	if !sleepCtx(context.Background(), time.Millisecond) {
-		t.Fatal("sleepCtx returned false after a normal delay")
-	}
-}
-
 // testWatcher builds a proWatcher backed by a real (temp-path) config holding the
 // given Pro, with the network seams replaced by the supplied fakes. Seams left nil
 // are wired to harmless defaults so a test only overrides what it asserts on.

@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/trick77/ship/kit/run"
+
 	"github.com/trick77/relume-tv/internal/bridge"
 	"github.com/trick77/relume-tv/internal/bridgepro"
 	"github.com/trick77/relume-tv/internal/clipv1"
@@ -219,7 +221,7 @@ func (w *proWatcher) run(ctx context.Context) {
 	if w.cfg.GetPro() == nil {
 		return
 	}
-	for sleepCtx(ctx, w.checkInterval()) {
+	for run.Sleep(ctx, w.checkInterval()) {
 		w.tick()
 	}
 }
