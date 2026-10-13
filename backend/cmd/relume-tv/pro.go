@@ -7,12 +7,12 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/trick77/ship/kit/run"
+
 	"github.com/trick77/relume-tv/internal/bridge"
 	"github.com/trick77/relume-tv/internal/bridgepro"
 	"github.com/trick77/relume-tv/internal/clipv1"
 	"github.com/trick77/relume-tv/internal/config"
-
-	"github.com/trick77/ship/kit/run"
 )
 
 // Setup precondition sentinels for the initial pairing selection (selectProForPairing).

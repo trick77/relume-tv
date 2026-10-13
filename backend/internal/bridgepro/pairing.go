@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/trick77/relume-tv/internal/config"
+	"github.com/trick77/ship/kit/run"
 )
 
 // Pairer completes the Hue Bridge Pro pairing handshake on an already-pinned config
@@ -66,10 +67,8 @@ func (p *Pairer) WaitForLinkButton(ctx context.Context, pro *config.BridgePro, d
 		if onAttempt != nil {
 			onAttempt(attempt)
 		}
-		select {
-		case <-ctx.Done():
+		if !run.Sleep(ctx, p.Interval) {
 			return nil, ctx.Err()
-		case <-time.After(p.Interval):
 		}
 	}
 }

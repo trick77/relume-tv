@@ -15,6 +15,8 @@ import (
 	"github.com/trick77/relume-tv/internal/bridgepro"
 	"github.com/trick77/relume-tv/internal/huestream"
 	"github.com/trick77/relume-tv/internal/translate"
+
+	"github.com/trick77/ship/kit/run"
 )
 
 // configName is the metadata.name relume-tv uses for its own entertainment
@@ -513,10 +515,8 @@ func (s *ProStreamer) run(ctx context.Context, done chan struct{}) {
 		if err := s.establish(ctx); err != nil {
 			s.setPath("rest")
 			s.log.Warn("hue bridge pro entertainment unavailable, falling back to REST forward", "err", err)
-			select {
-			case <-ctx.Done():
+			if !run.Sleep(ctx, backoff) {
 				return
-			case <-time.After(backoff):
 			}
 			if backoff < 15*time.Second {
 				backoff *= 2
