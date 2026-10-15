@@ -1,12 +1,13 @@
 package webui
 
 import (
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/trick77/ship/kit/spa"
 
 	"github.com/trick77/relume-tv/web"
 )
@@ -15,7 +16,7 @@ import (
 // into web/dist must not go green.
 func requireBuiltUI(t *testing.T) {
 	t.Helper()
-	if _, err := fs.Stat(web.FS(), "index.html"); err != nil {
+	if !spa.Built(web.FS()) {
 		t.Fatal("web/dist holds no UI: run `make ui` (or `make test`) from the repo root")
 	}
 }
@@ -46,9 +47,8 @@ func TestIndexServesAppShell(t *testing.T) {
 func TestBuiltUIRouting(t *testing.T) {
 	srv := NewServer(":0", NewHub(1), fakeSource{}, discardLog())
 	srv.assets = fstest.MapFS{
-		"index.html":    {Data: []byte("<!doctype html>shell")},
-		"app.js":        {Data: []byte("app()")},
-		"assets/x-1.js": {Data: []byte("chunk()")},
+		"index.html": {Data: []byte("<!doctype html>shell")},
+		"app.js":     {Data: []byte("app()")},
 	}
 	h := srv.Handler()
 	for _, tt := range []struct {
@@ -56,11 +56,13 @@ func TestBuiltUIRouting(t *testing.T) {
 		code              int
 	}{
 		{"/", "shell", "no-cache", 200},
-		{"/setup", "shell", "no-cache", 200},
 		// app.js is not content-hashed: no long-lived cache, an upgrade must replace it.
 		{"/app.js", "app()", "", 200},
-		{"/assets/x-1.js", "chunk()", "public, max-age=31536000, immutable", 200},
-		{"/assets/gone.js", "", "", 404},
+		// No client router, relative asset URLs: a nested path's shell would load
+		// /setup/app.js as more HTML, so only / gets the shell.
+		{"/setup", "", "", 404},
+		{"/setup/app.js", "", "", 404},
+		{"/favicon.ico", "", "", 404},
 		{"/api/typo", "", "", 404},
 	} {
 		rec := httptest.NewRecorder()

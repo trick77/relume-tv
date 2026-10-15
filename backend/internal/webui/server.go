@@ -90,7 +90,13 @@ func (s *Server) routes() http.Handler {
 	if !spa.Built(assets) && s.log != nil {
 		s.log.Warn("web UI not built into this binary; serving a placeholder (build with `make build`)")
 	}
-	mux.Handle("GET /", spa.Handler(assets, spa.Options{Placeholder: []byte(notBuiltPage)}))
+	// The UI has no client router and loads app.js/app.css by relative URL: only /
+	// gets the shell, so a nested path is a 404 rather than a shell whose assets
+	// resolve to more shells.
+	mux.Handle("GET /", spa.Handler(assets, spa.Options{
+		Routes:      func(p string) bool { return p == "/" },
+		Placeholder: []byte(notBuiltPage),
+	}))
 	return mux
 }
 
