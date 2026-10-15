@@ -73,13 +73,11 @@ type LightProvider struct {
 	// immediately (see SetLightV1) and forwarded to the Hue Bridge Pro asynchronously
 	// by drain. pending keeps only the latest state per light, so intermediate
 	// Ambilight frames the Hue Bridge Pro cannot keep up with are coalesced away.
-	ctrlMu   sync.Mutex
-	pending  map[string]map[string]any
-	draining bool
-	// drained is closed when the running drain exits (nil while none runs); closed
-	// refuses further writes once Close has run, so none lands after the shutdown
-	// lights-off. closed is set under ctrlMu; atomic so the drain reads it per light
-	// without the lock.
+	ctrlMu  sync.Mutex
+	pending map[string]map[string]any
+	// drained is non-nil while a drain runs and closed when it exits; closed refuses
+	// further writes once Close has run, so none lands after the shutdown lights-off.
+	// closed is set under ctrlMu; atomic so forward reads it per write without the lock.
 	drained chan struct{}
 	closed  atomic.Bool
 
@@ -240,8 +238,7 @@ func (p *LightProvider) SetLightV1(v1id string, v1state map[string]any) error {
 		coalesced = true
 	}
 	p.pending[v1id] = v1state
-	if !p.draining {
-		p.draining = true
+	if p.drained == nil {
 		p.drained = make(chan struct{})
 		go p.drain(p.drained)
 	}
@@ -263,7 +260,6 @@ func (p *LightProvider) drain(done chan struct{}) {
 	for {
 		p.ctrlMu.Lock()
 		if len(p.pending) == 0 {
-			p.draining = false
 			p.drained = nil
 			p.ctrlMu.Unlock()
 			return
@@ -273,9 +269,6 @@ func (p *LightProvider) drain(done chan struct{}) {
 		p.ctrlMu.Unlock()
 
 		for v1id, v1state := range batch {
-			if p.closed.Load() {
-				break
-			}
 			if err := p.forward(v1id, v1state); err != nil {
 				p.recordForwardErr(err)
 			}
@@ -361,10 +354,11 @@ func (p *LightProvider) forward(v1id string, v1state map[string]any) error {
 		if uuid, ok = p.UUIDForV1(v1id); !ok {
 			return fmt.Errorf("unknown light id %q", v1id)
 		}
-		// The fetch may have outlasted the shutdown fence: the lights are off by now.
-		if p.closed.Load() {
-			return nil
-		}
+	}
+	// Closed (the shutdown fence ran, perhaps while the fetch above stalled): the
+	// lights are being turned off, a write now would switch one back on.
+	if p.closed.Load() {
+		return nil
 	}
 	// Write to the Pro FIRST, then mark the light driven. Marking it before the write
 	// would taint the ControlledSet (the restart/idle turn-off targets it) and surface a UI

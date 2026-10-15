@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/trick77/relume-tv/internal/bridgepro"
+	"github.com/trick77/relume-tv/internal/clipv1"
 )
 
 // downClient models an unreachable Hue Bridge Pro: every write fails, so the provider's
@@ -296,6 +297,33 @@ func TestClose_waitsForTheWriteInFlightAndDropsTheRest(t *testing.T) {
 	}
 	if !p.Close(time.Millisecond) {
 		t.Fatal("Close on an idle provider = false")
+	}
+}
+
+// clipv1's shutdown fence finds Close through this interface.
+var _ clipv1.LightWriteCloser = (*LightProvider)(nil)
+
+// The rest of a batch already taken by the drain is dropped once Close has run.
+func TestClose_dropsTheRestOfATakenBatch(t *testing.T) {
+	// Given: a drain holding a two-light batch, its first write in flight
+	gate := make(chan struct{})
+	fc := &fakeClient{gate: gate}
+	p := newTestProvider(fc)
+	p.pending = map[string]map[string]any{"1": {"ct": 1}, "2": {"ct": 2}}
+	p.drained = make(chan struct{})
+	go p.drain(p.drained)
+	waitFor(t, func() bool { return fc.calls() == 1 })
+
+	// When: Close runs, then the write in flight finishes
+	p.Close(0)
+	close(gate)
+	if !p.Close(2 * time.Second) {
+		t.Fatal("drain did not finish")
+	}
+
+	// Then: only that write reached the Pro
+	if got := fc.seen(); len(got) != 1 {
+		t.Fatalf("forwarded mirek = %v, want one write", got)
 	}
 }
 
