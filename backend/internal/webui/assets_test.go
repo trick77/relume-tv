@@ -56,6 +56,7 @@ func TestBuiltUIRouting(t *testing.T) {
 		code              int
 	}{
 		{"/", "shell", "no-cache", 200},
+		{"/index.html", "shell", "no-cache", 200},
 		// app.js is not content-hashed: no long-lived cache, an upgrade must replace it.
 		{"/app.js", "app()", "", 200},
 		// No client router, relative asset URLs: a nested path's shell would load

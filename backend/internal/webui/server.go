@@ -92,9 +92,9 @@ func (s *Server) routes() http.Handler {
 	}
 	// The UI has no client router and loads app.js/app.css by relative URL: only /
 	// gets the shell, so a nested path is a 404 rather than a shell whose assets
-	// resolve to more shells.
+	// resolve to more shells. /index.html stays a bookmarkable alias.
 	mux.Handle("GET /", spa.Handler(assets, spa.Options{
-		Routes:      func(p string) bool { return p == "/" },
+		Routes:      func(p string) bool { return p == "/" || p == "/index.html" },
 		Placeholder: []byte(notBuiltPage),
 	}))
 	return mux
