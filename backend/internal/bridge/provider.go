@@ -297,11 +297,19 @@ func (p *LightProvider) Close(max time.Duration) bool {
 	if done == nil {
 		return true
 	}
+	t := time.NewTimer(max)
+	defer t.Stop()
 	select {
 	case <-done:
 		return true
-	case <-time.After(max):
-		return false
+	case <-t.C:
+		// A drain that finished as the timer fired still counts: select picks at random.
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
 	}
 }
 

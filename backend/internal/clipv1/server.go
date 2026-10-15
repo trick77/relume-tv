@@ -52,9 +52,7 @@ type Server struct {
 	started  time.Time // process start, reported as the whitelist create / update dates
 	lightsMu sync.RWMutex
 	lights   LightProvider
-	// retired are replaced providers whose last write may still be in flight;
 	// lightsClosed is set by CloseLightWrites (see SetLightProvider).
-	retired      []LightWriteCloser
 	lightsClosed bool
 	// Debug enables verbose request logging (User-Agent + body) — helpful for
 	// analyzing the real behavior of unknown TVs.
@@ -167,23 +165,11 @@ func (s *Server) MarkDTLSStreamDown() {
 // Safe to call at runtime: the backend may be paired asynchronously after the
 // HTTP server is already serving the TV.
 //
-// The replaced provider is closed (its queued writes dropped) and kept until its
-// write in flight is done, so CloseLightWrites can wait for it too. After
-// CloseLightWrites a newly set provider starts closed: a re-pair racing the
+// After CloseLightWrites a newly set provider starts closed: a re-pair racing the
 // shutdown must not reopen the write path behind the lights-off.
 func (s *Server) SetLightProvider(p LightProvider) {
 	s.lightsMu.Lock()
 	defer s.lightsMu.Unlock()
-	if old, ok := s.lights.(LightWriteCloser); ok && s.lights != p {
-		s.retired = append(s.retired, old)
-	}
-	busy := s.retired[:0]
-	for _, c := range s.retired {
-		if !c.Close(0) {
-			busy = append(busy, c)
-		}
-	}
-	s.retired = busy
 	if c, ok := p.(LightWriteCloser); ok && s.lightsClosed {
 		c.Close(0)
 	}
@@ -200,25 +186,16 @@ func (s *Server) ForwardLight(v1id string, state map[string]any) {
 	}
 }
 
-// CloseLightWrites closes the light write path for good: the current provider, the
-// replaced ones whose last write is still in flight, and any set later. It waits up
-// to budget in total for the writes in flight and reports whether none can still land.
+// CloseLightWrites closes the light write path for good, the current provider and
+// any set later, and waits up to budget for the write in flight. It reports whether
+// none can still land. A provider a re-pair replaced earlier is not tracked: its
+// last write went to the Pro's old address.
 func (s *Server) CloseLightWrites(budget time.Duration) bool {
 	s.lightsMu.Lock()
 	s.lightsClosed = true
-	closers := append([]LightWriteCloser(nil), s.retired...)
-	if c, ok := s.lights.(LightWriteCloser); ok {
-		closers = append(closers, c)
-	}
+	c, ok := s.lights.(LightWriteCloser)
 	s.lightsMu.Unlock()
-	deadline := time.Now().Add(budget)
-	done := true
-	for _, c := range closers {
-		if !c.Close(max(0, time.Until(deadline))) {
-			done = false
-		}
-	}
-	return done
+	return !ok || c.Close(budget)
 }
 
 // lightProvider returns the current backend (may be nil until the Pro is paired).

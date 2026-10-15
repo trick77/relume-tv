@@ -392,16 +392,15 @@ func TestCloseLightWrites(t *testing.T) {
 		t.Error("provider without a queue: CloseLightWrites = false")
 	}
 
-	// A replaced provider still writing is closed at once and waited for at shutdown.
+	// The current provider is closed; one still writing reports it.
 	s, _ = newTestServer(t)
-	old, cur := &closingProvider{busy: true}, &closingProvider{}
-	s.SetLightProvider(old)
+	cur := &closingProvider{busy: true}
 	s.SetLightProvider(cur)
-	if old.closes != 1 || cur.closes != 0 {
-		t.Fatalf("after replace: old closed %d, current closed %d; want 1, 0", old.closes, cur.closes)
+	if cur.closes != 0 {
+		t.Fatalf("provider closed %d times before shutdown, want 0", cur.closes)
 	}
 	if s.CloseLightWrites(10 * time.Millisecond) {
-		t.Error("CloseLightWrites = true while the replaced provider is still writing")
+		t.Error("CloseLightWrites = true while a write is still in flight")
 	}
 	if cur.closes != 1 {
 		t.Errorf("current provider closed %d times, want 1", cur.closes)

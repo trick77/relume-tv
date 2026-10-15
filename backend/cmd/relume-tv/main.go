@@ -672,8 +672,10 @@ func runServe(opts serveOptions) error {
 const shutdownTurnOffBudget = 3 * time.Second
 
 // shutdownWriteBudget caps the wait for the light write in flight before the
-// shutdown turn-off: one Pro round-trip on a healthy LAN. The 5 s drain, this wait
-// and the 3 s turn-off sum to 9 s, under Docker's default 10 s stop grace.
+// shutdown turn-off: one Pro round-trip on a healthy LAN. With a responsive Pro the
+// 5 s drain, this wait, the stream release and the 3 s turn-off fit Docker's default
+// 10 s stop grace; a Pro that stalls the stream release (its 10 s client timeout)
+// can push the turn-off past it.
 const shutdownWriteBudget = time.Second
 
 // The shutdown fence (clip.CloseLightWrites) finds Close through this interface: a
