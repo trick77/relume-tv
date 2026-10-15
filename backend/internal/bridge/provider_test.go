@@ -290,13 +290,41 @@ func TestClose_waitsForTheWriteInFlightAndDropsTheRest(t *testing.T) {
 	if !<-closed {
 		t.Fatal("Close = false after the write in flight finished")
 	}
-	p.SetLightV1("1", map[string]any{"ct": 4})
-	time.Sleep(20 * time.Millisecond)
+	p.SetLightV1("1", map[string]any{"ct": 4}) // dropped synchronously: no drain starts
 	if got := fc.seen(); len(got) != 1 || got[0] != 1 {
 		t.Fatalf("forwarded mirek = %v, want [1] (queued and later writes dropped)", got)
 	}
 	if !p.Close(time.Millisecond) {
 		t.Fatal("Close on an idle provider = false")
+	}
+}
+
+// A write whose light-list fetch outlasts the fence must not reach the Pro after it.
+func TestClose_dropsAWriteWhoseFetchOutlastsIt(t *testing.T) {
+	// Given: a fresh provider (no id mapping) whose first write waits on the list fetch
+	gate := make(chan struct{})
+	lc := &lightsClient{lights: []bridgepro.Light{colorLight("uuid-a")}, gate: gate}
+	p := &LightProvider{client: lc, pending: map[string]map[string]any{}}
+	p.SetLightV1("1", map[string]any{"ct": 200})
+	waitFor(t, func() bool { return lc.n() == 1 })
+
+	// When: the fence runs out while the fetch is in flight, then the fetch returns
+	if p.Close(0) {
+		t.Fatal("Close = true with the fetch in flight")
+	}
+	close(gate)
+	if !p.Close(2 * time.Second) {
+		t.Fatal("drain did not finish")
+	}
+
+	// Then: the light resolved, yet nothing was written
+	if _, ok := p.UUIDForV1("1"); !ok {
+		t.Fatal("light 1 did not resolve: the test would pass vacuously")
+	}
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+	if lc.writes != 0 {
+		t.Fatalf("SetLight calls = %d after Close, want 0", lc.writes)
 	}
 }
 
@@ -320,6 +348,7 @@ type lightsClient struct {
 	err    error
 	gate   chan struct{}
 	calls  int
+	writes int
 }
 
 func (c *lightsClient) Lights() ([]bridgepro.Light, error) {
@@ -333,7 +362,12 @@ func (c *lightsClient) Lights() ([]bridgepro.Light, error) {
 	return lights, err
 }
 
-func (c *lightsClient) SetLight(string, map[string]any) error { return nil }
+func (c *lightsClient) SetLight(string, map[string]any) error {
+	c.mu.Lock()
+	c.writes++
+	c.mu.Unlock()
+	return nil
+}
 
 func (c *lightsClient) n() int {
 	c.mu.Lock()

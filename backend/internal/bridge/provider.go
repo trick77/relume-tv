@@ -361,6 +361,10 @@ func (p *LightProvider) forward(v1id string, v1state map[string]any) error {
 		if uuid, ok = p.UUIDForV1(v1id); !ok {
 			return fmt.Errorf("unknown light id %q", v1id)
 		}
+		// The fetch may have outlasted the shutdown fence: the lights are off by now.
+		if p.closed.Load() {
+			return nil
+		}
 	}
 	// Write to the Pro FIRST, then mark the light driven. Marking it before the write
 	// would taint the ControlledSet (the restart/idle turn-off targets it) and surface a UI

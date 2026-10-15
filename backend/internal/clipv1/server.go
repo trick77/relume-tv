@@ -40,6 +40,7 @@ type LightProvider interface {
 // (bridge.LightProvider; main asserts it at compile time). Close stops further
 // writes and waits up to max for the one in flight, reporting whether it finished.
 type LightWriteCloser interface {
+	LightProvider
 	Close(max time.Duration) bool
 }
 
@@ -170,6 +171,7 @@ func (s *Server) MarkDTLSStreamDown() {
 func (s *Server) SetLightProvider(p LightProvider) {
 	s.lightsMu.Lock()
 	defer s.lightsMu.Unlock()
+	// Closed before it is visible, so no write reaches it. Close(0) never waits.
 	if c, ok := p.(LightWriteCloser); ok && s.lightsClosed {
 		c.Close(0)
 	}
