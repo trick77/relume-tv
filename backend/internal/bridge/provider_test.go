@@ -260,6 +260,46 @@ func TestSetLightV1_firesOnForwardErr(t *testing.T) {
 	waitFor(t, func() bool { return errs.Load() == 1 })
 }
 
+// Close is the shutdown fence: the write in flight finishes before it returns, the
+// queued ones and any later one never reach the Pro, so nothing lands behind the
+// lights-off.
+func TestClose_waitsForTheWriteInFlightAndDropsTheRest(t *testing.T) {
+	// Given: one write held in flight at the Pro, two more queued behind it
+	gate := make(chan struct{})
+	fc := &fakeClient{gate: gate}
+	p := newTestProvider(fc)
+	p.SetLightV1("1", map[string]any{"ct": 1})
+	waitFor(t, func() bool { return fc.calls() == 1 })
+	p.SetLightV1("1", map[string]any{"ct": 2})
+	p.SetLightV1("2", map[string]any{"ct": 3})
+
+	// When: Close runs while the write is still in flight
+	if p.Close(10 * time.Millisecond) {
+		t.Fatal("Close = true while a write is still in flight")
+	}
+	closed := make(chan bool, 1)
+	go func() { closed <- p.Close(2 * time.Second) }()
+	select {
+	case <-closed:
+		t.Fatal("Close returned before the write in flight finished")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(gate)
+
+	// Then: it returns once that write is done, and nothing else is forwarded
+	if !<-closed {
+		t.Fatal("Close = false after the write in flight finished")
+	}
+	p.SetLightV1("1", map[string]any{"ct": 4})
+	time.Sleep(20 * time.Millisecond)
+	if got := fc.seen(); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("forwarded mirek = %v, want [1] (queued and later writes dropped)", got)
+	}
+	if !p.Close(time.Millisecond) {
+		t.Fatal("Close on an idle provider = false")
+	}
+}
+
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

@@ -643,6 +643,13 @@ func runServe(opts serveOptions) error {
 		return err
 	}
 	log.Info("shutdown signal")
+	// TV light writes reach the Pro asynchronously (the provider's drain), and a TV
+	// request cut by a drain overrun may still be queueing one: close the write path
+	// and let the write in flight finish before the lights-off, or it lands behind it
+	// and switches a light back on.
+	if !clip.CloseLightWrites(shutdownWriteBudget) {
+		log.Warn("a light write to the hue bridge pro is still in flight; turning off anyway", "after", shutdownWriteBudget.String())
+	}
 	// Release relume-tv's own entertainment stream on the Pro before turning the lights
 	// off, so the Pro area is deactivated (StopStream uses the client's own timeout, not
 	// the cancelled ctx) and never leaks past process exit (Phase D).
@@ -663,6 +670,11 @@ func runServe(opts serveOptions) error {
 // stall well past the container stop grace (then get SIGKILLed). This bounds it so
 // the process exits promptly.
 const shutdownTurnOffBudget = 3 * time.Second
+
+// shutdownWriteBudget caps the wait for the light write in flight before the
+// shutdown turn-off: one Pro round-trip on a healthy LAN, short enough that the
+// drain, this wait and the turn-off stay inside a container's stop grace.
+const shutdownWriteBudget = 2 * time.Second
 
 // turnOffBounded turns the driven lights off with a hard total deadline: it returns
 // after the turn-off completes or after max elapses (whichever first). On timeout the

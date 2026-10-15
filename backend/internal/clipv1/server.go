@@ -171,6 +171,16 @@ func (s *Server) ForwardLight(v1id string, state map[string]any) {
 	}
 }
 
+// CloseLightWrites closes the current provider to further light writes and waits up
+// to max for the one in flight (see bridge.LightProvider.Close). It reports whether
+// none can still land; true with no provider or one without a write queue.
+func (s *Server) CloseLightWrites(max time.Duration) bool {
+	if c, ok := s.lightProvider().(interface{ Close(time.Duration) bool }); ok {
+		return c.Close(max)
+	}
+	return true
+}
+
 // lightProvider returns the current backend (may be nil until the Pro is paired).
 func (s *Server) lightProvider() LightProvider {
 	s.lightsMu.RLock()

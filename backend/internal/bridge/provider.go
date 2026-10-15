@@ -76,6 +76,11 @@ type LightProvider struct {
 	ctrlMu   sync.Mutex
 	pending  map[string]map[string]any
 	draining bool
+	// drained is closed when the running drain exits (nil while none runs); closed
+	// refuses further writes once Close has run, so none lands after the shutdown
+	// lights-off.
+	drained chan struct{}
+	closed  bool
 
 	// Forward errors are summarized rather than logged per failed write: the
 	// optimistic ack removes the old per-write back-pressure, so a down Hue Bridge Pro
@@ -222,6 +227,10 @@ func (p *LightProvider) V1ForUUID(uuid string) (string, bool) {
 // surfaced to the TV (latency over error reporting). Always returns nil.
 func (p *LightProvider) SetLightV1(v1id string, v1state map[string]any) error {
 	p.ctrlMu.Lock()
+	if p.closed {
+		p.ctrlMu.Unlock()
+		return nil
+	}
 	var coalesced bool
 	if _, exists := p.pending[v1id]; exists {
 		// A previous frame for this light is still queued → it is dropped (coalesced)
@@ -232,7 +241,8 @@ func (p *LightProvider) SetLightV1(v1id string, v1state map[string]any) error {
 	p.pending[v1id] = v1state
 	if !p.draining {
 		p.draining = true
-		go p.drain()
+		p.drained = make(chan struct{})
+		go p.drain(p.drained)
 	}
 	p.ctrlMu.Unlock()
 	// Fire the UI callback outside the lock (like OnForward), so a slow consumer
@@ -247,11 +257,13 @@ func (p *LightProvider) SetLightV1(v1id string, v1state map[string]any) error {
 // only the latest state per light. It runs in its own goroutine started by
 // SetLightV1 and exits once the queue is empty, so a replaced provider's goroutine
 // terminates on its own (no writes arrive → drain finishes).
-func (p *LightProvider) drain() {
+func (p *LightProvider) drain(done chan struct{}) {
+	defer close(done)
 	for {
 		p.ctrlMu.Lock()
 		if len(p.pending) == 0 {
 			p.draining = false
+			p.drained = nil
 			p.ctrlMu.Unlock()
 			return
 		}
@@ -260,10 +272,41 @@ func (p *LightProvider) drain() {
 		p.ctrlMu.Unlock()
 
 		for v1id, v1state := range batch {
+			if p.isClosed() {
+				break
+			}
 			if err := p.forward(v1id, v1state); err != nil {
 				p.recordForwardErr(err)
 			}
 		}
+	}
+}
+
+func (p *LightProvider) isClosed() bool {
+	p.ctrlMu.Lock()
+	defer p.ctrlMu.Unlock()
+	return p.closed
+}
+
+// Close stops forwarding for good: later writes are dropped, queued ones discarded,
+// and it waits up to max for the write already on its way to the Pro. It reports
+// whether that write finished; false means it may still land (the Pro is slower
+// than max). Shutdown calls it before turning the lights off, so the async drain
+// cannot switch a light back on behind the turn-off.
+func (p *LightProvider) Close(max time.Duration) bool {
+	p.ctrlMu.Lock()
+	p.closed = true
+	p.pending = map[string]map[string]any{}
+	done := p.drained
+	p.ctrlMu.Unlock()
+	if done == nil {
+		return true
+	}
+	select {
+	case <-done:
+		return true
+	case <-time.After(max):
+		return false
 	}
 }
 

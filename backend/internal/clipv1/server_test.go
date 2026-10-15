@@ -372,6 +372,31 @@ type fakeLightProvider struct{ lights map[string]any }
 func (f fakeLightProvider) LightsV1() (map[string]any, error)       { return f.lights, nil }
 func (f fakeLightProvider) SetLightV1(string, map[string]any) error { return nil }
 
+// closingProvider is a provider with a write queue to close (bridge.LightProvider's shape).
+type closingProvider struct {
+	fakeLightProvider
+	got  time.Duration
+	busy bool
+}
+
+func (p *closingProvider) Close(max time.Duration) bool { p.got = max; return !p.busy }
+
+func TestCloseLightWrites(t *testing.T) {
+	s, _ := newTestServer(t)
+	if !s.CloseLightWrites(time.Second) {
+		t.Error("no provider: CloseLightWrites = false")
+	}
+	s.SetLightProvider(fakeLightProvider{})
+	if !s.CloseLightWrites(time.Second) {
+		t.Error("provider without a queue: CloseLightWrites = false")
+	}
+	p := &closingProvider{busy: true}
+	s.SetLightProvider(p)
+	if s.CloseLightWrites(time.Second) || p.got != time.Second {
+		t.Errorf("busy provider: CloseLightWrites passed max %v and reported done", p.got)
+	}
+}
+
 // The TV reads the bulbs from the full datastore (GET /api/{user}), not from a
 // separate /lights call — so the datastore MUST surface the paired Pro's lights,
 // otherwise the TV reports "no hue color bulbs found".
