@@ -37,7 +37,8 @@ type LightProvider interface {
 }
 
 // LightWriteCloser is a LightProvider whose writes can be fenced off for shutdown
-// (bridge.LightProvider; main asserts it at compile time). Close stops further
+// (bridge.LightProvider; bridge's tests assert it, so a drifted signature fails the
+// gate). Close stops further
 // writes and waits up to max for the one in flight, reporting whether it finished.
 type LightWriteCloser interface {
 	LightProvider

@@ -347,6 +347,9 @@ func (p *LightProvider) forward(v1id string, v1state map[string]any) error {
 	}
 	uuid, ok := p.UUIDForV1(v1id)
 	if !ok {
+		if p.closed.Load() {
+			return nil // dropped anyway: skip the fetch
+		}
 		// Mapping may not be built yet → load lights once and check again.
 		if _, err := p.LightsV1(); err != nil {
 			return err

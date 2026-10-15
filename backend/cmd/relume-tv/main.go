@@ -654,7 +654,8 @@ func runServe(opts serveOptions) error {
 	// off, so the Pro area is deactivated (StopStream uses the client's own timeout, not
 	// the cancelled ctx) and never leaks past process exit (Phase D).
 	stopEntertainment(entStreamer)
-	if !<-fenced {
+	// A slow stream release may have outlasted the write: ask again before warning.
+	if !<-fenced && !clip.CloseLightWrites(0) {
 		log.Warn("a light write to the hue bridge pro is still in flight; turning off anyway", "after", shutdownWriteBudget.String())
 	}
 	// Stop accepting TV writes first (above), then turn the driven lights off so they
