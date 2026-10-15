@@ -104,7 +104,9 @@ State (bridge identity, TV tokens, **Bridge Pro app key + client key**) lives in
 ### Health
 
 Both HTTP servers answer `GET /healthz` (liveness) and `GET /readyz` (readiness, no checks: relume-tv is useful
-before the Bridge Pro is paired). The image is distroless: there is no shell inside the container.
+before the Bridge Pro is paired), to callers on the same host only (loopback, no forwarding header); anyone else
+gets 404. With host networking a probe of `127.0.0.1` on the Docker host works too; a monitor on another machine
+cannot reach them. The image is distroless: there is no shell inside the container.
 
 ## Development
 

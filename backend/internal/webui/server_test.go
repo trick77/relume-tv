@@ -149,12 +149,20 @@ func TestNewHTTPServerSetsHeaderTimeoutOnly(t *testing.T) {
 }
 
 func TestServer_HealthProbes(t *testing.T) {
-	srv := NewServer(":0", NewHub(8), fakeSource{}, discardLog())
+	h := NewServer(":0", NewHub(8), fakeSource{}, discardLog()).Handler()
 	for _, path := range []string{"/healthz", "/readyz"} {
+		// The probes answer only this host: the UI port is LAN-reachable.
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = "127.0.0.1:40000"
 		rec := httptest.NewRecorder()
-		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Errorf("GET %s = %d, want 200", path, rec.Code)
+		}
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s from the LAN = %d, want 404", path, rec.Code)
 		}
 	}
 }

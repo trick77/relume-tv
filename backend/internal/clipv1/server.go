@@ -36,6 +36,15 @@ type LightProvider interface {
 	SetLightV1(v1id string, v1state map[string]any) error
 }
 
+// LightWriteCloser is a LightProvider whose writes can be fenced off for shutdown
+// (bridge.LightProvider; bridge's tests assert it, so a drifted signature fails the
+// gate). Close stops further
+// writes and waits up to max for the one in flight, reporting whether it finished.
+type LightWriteCloser interface {
+	LightProvider
+	Close(max time.Duration) bool
+}
+
 // Server serves the CLIP-v1 interface.
 type Server struct {
 	cfg      *config.Config
@@ -45,6 +54,8 @@ type Server struct {
 	started  time.Time // process start, reported as the whitelist create / update dates
 	lightsMu sync.RWMutex
 	lights   LightProvider
+	// lightsClosed is set by CloseLightWrites (see SetLightProvider).
+	lightsClosed bool
 	// Debug enables verbose request logging (User-Agent + body) — helpful for
 	// analyzing the real behavior of unknown TVs.
 	Debug bool
@@ -155,10 +166,17 @@ func (s *Server) MarkDTLSStreamDown() {
 // SetLightProvider registers the source for the light list (Hue Bridge Pro backend).
 // Safe to call at runtime: the backend may be paired asynchronously after the
 // HTTP server is already serving the TV.
+//
+// After CloseLightWrites a newly set provider starts closed: a re-pair racing the
+// shutdown must not reopen the write path behind the lights-off.
 func (s *Server) SetLightProvider(p LightProvider) {
 	s.lightsMu.Lock()
+	defer s.lightsMu.Unlock()
+	// Closed before it is visible, so no write reaches it. Close(0) never waits.
+	if c, ok := p.(LightWriteCloser); ok && s.lightsClosed {
+		c.Close(0)
+	}
 	s.lights = p
-	s.lightsMu.Unlock()
 }
 
 // ForwardLight pushes a light state (v1 id + state) to the Hue Bridge Pro via the
@@ -169,6 +187,18 @@ func (s *Server) ForwardLight(v1id string, state map[string]any) {
 	if lp := s.lightProvider(); lp != nil {
 		_ = lp.SetLightV1(v1id, state)
 	}
+}
+
+// CloseLightWrites closes the light write path for good, the current provider and
+// any set later, and waits up to budget for the write in flight. It reports whether
+// none can still land. A provider a re-pair replaced earlier is not tracked: its
+// last write went to the Pro's old address.
+func (s *Server) CloseLightWrites(budget time.Duration) bool {
+	s.lightsMu.Lock()
+	s.lightsClosed = true
+	c, ok := s.lights.(LightWriteCloser)
+	s.lightsMu.Unlock()
+	return !ok || c.Close(budget)
 }
 
 // lightProvider returns the current backend (may be nil until the Pro is paired).

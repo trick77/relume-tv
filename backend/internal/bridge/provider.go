@@ -73,9 +73,13 @@ type LightProvider struct {
 	// immediately (see SetLightV1) and forwarded to the Hue Bridge Pro asynchronously
 	// by drain. pending keeps only the latest state per light, so intermediate
 	// Ambilight frames the Hue Bridge Pro cannot keep up with are coalesced away.
-	ctrlMu   sync.Mutex
-	pending  map[string]map[string]any
-	draining bool
+	ctrlMu  sync.Mutex
+	pending map[string]map[string]any
+	// drained is non-nil while a drain runs and closed when it exits; closed refuses
+	// further writes once Close has run, so none lands after the shutdown lights-off.
+	// closed is set under ctrlMu; atomic so forward reads it per write without the lock.
+	drained chan struct{}
+	closed  atomic.Bool
 
 	// Forward errors are summarized rather than logged per failed write: the
 	// optimistic ack removes the old per-write back-pressure, so a down Hue Bridge Pro
@@ -222,6 +226,10 @@ func (p *LightProvider) V1ForUUID(uuid string) (string, bool) {
 // surfaced to the TV (latency over error reporting). Always returns nil.
 func (p *LightProvider) SetLightV1(v1id string, v1state map[string]any) error {
 	p.ctrlMu.Lock()
+	if p.closed.Load() {
+		p.ctrlMu.Unlock()
+		return nil
+	}
 	var coalesced bool
 	if _, exists := p.pending[v1id]; exists {
 		// A previous frame for this light is still queued → it is dropped (coalesced)
@@ -230,9 +238,9 @@ func (p *LightProvider) SetLightV1(v1id string, v1state map[string]any) error {
 		coalesced = true
 	}
 	p.pending[v1id] = v1state
-	if !p.draining {
-		p.draining = true
-		go p.drain()
+	if p.drained == nil {
+		p.drained = make(chan struct{})
+		go p.drain(p.drained)
 	}
 	p.ctrlMu.Unlock()
 	// Fire the UI callback outside the lock (like OnForward), so a slow consumer
@@ -247,11 +255,12 @@ func (p *LightProvider) SetLightV1(v1id string, v1state map[string]any) error {
 // only the latest state per light. It runs in its own goroutine started by
 // SetLightV1 and exits once the queue is empty, so a replaced provider's goroutine
 // terminates on its own (no writes arrive → drain finishes).
-func (p *LightProvider) drain() {
+func (p *LightProvider) drain(done chan struct{}) {
+	defer close(done)
 	for {
 		p.ctrlMu.Lock()
 		if len(p.pending) == 0 {
-			p.draining = false
+			p.drained = nil
 			p.ctrlMu.Unlock()
 			return
 		}
@@ -263,6 +272,36 @@ func (p *LightProvider) drain() {
 			if err := p.forward(v1id, v1state); err != nil {
 				p.recordForwardErr(err)
 			}
+		}
+	}
+}
+
+// Close stops forwarding for good: later writes are dropped, queued ones discarded,
+// and it waits up to max for the write already on its way to the Pro. It reports
+// whether that write finished; false means it may still land (the Pro is slower
+// than max). Shutdown calls it before turning the lights off, so the async drain
+// cannot switch a light back on behind the turn-off.
+func (p *LightProvider) Close(max time.Duration) bool {
+	p.ctrlMu.Lock()
+	p.closed.Store(true)
+	p.pending = map[string]map[string]any{}
+	done := p.drained
+	p.ctrlMu.Unlock()
+	if done == nil {
+		return true
+	}
+	t := time.NewTimer(max)
+	defer t.Stop()
+	select {
+	case <-done:
+		return true
+	case <-t.C:
+		// A drain that finished as the timer fired still counts: select picks at random.
+		select {
+		case <-done:
+			return true
+		default:
+			return false
 		}
 	}
 }
@@ -308,6 +347,9 @@ func (p *LightProvider) forward(v1id string, v1state map[string]any) error {
 	}
 	uuid, ok := p.UUIDForV1(v1id)
 	if !ok {
+		if p.closed.Load() {
+			return nil // dropped anyway: skip the fetch
+		}
 		// Mapping may not be built yet → load lights once and check again.
 		if _, err := p.LightsV1(); err != nil {
 			return err
@@ -315,6 +357,11 @@ func (p *LightProvider) forward(v1id string, v1state map[string]any) error {
 		if uuid, ok = p.UUIDForV1(v1id); !ok {
 			return fmt.Errorf("unknown light id %q", v1id)
 		}
+	}
+	// Closed (the shutdown fence ran, perhaps while the fetch above stalled): the
+	// lights are being turned off, a write now would switch one back on.
+	if p.closed.Load() {
+		return nil
 	}
 	// Write to the Pro FIRST, then mark the light driven. Marking it before the write
 	// would taint the ControlledSet (the restart/idle turn-off targets it) and surface a UI

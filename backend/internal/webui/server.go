@@ -10,12 +10,14 @@ import (
 	"time"
 
 	"github.com/trick77/ship/kit/httpx"
+	"github.com/trick77/ship/kit/spa"
 
 	"github.com/trick77/relume-tv/web"
 )
 
-// notBuiltPage answers / when the binary was built without the UI copied into
-// web/dist (a bare `go build` on a fresh clone), instead of a bare 404.
+// notBuiltPage is kit spa's placeholder (503) when the binary was built without the
+// UI copied into web/dist (a bare `go build` on a fresh clone): kit's default names
+// another repo's make target.
 const notBuiltPage = `<!doctype html><title>relume-tv</title><p>Web UI not built into this binary. Run <code>make build</code>.</p>`
 
 // Server is the web UI HTTP server. It is separate from the TV-facing clipv1
@@ -63,13 +65,15 @@ func (s *Server) runSnapshotLoop(ctx context.Context) {
 }
 
 // Handler returns the routed HTTP handler behind kit's access log (routine requests
-// at debug, probes never) and panic recovery. AccessLog is outermost, so a recovered
-// panic's 500 carries the request id; its writer passes Flush through, so the
-// /api/events stream still streams.
+// at debug, probes never), panic recovery and baseline security headers (the UI
+// loads nothing from elsewhere, so kit's default CSP fits). AccessLog is outermost,
+// so a recovered panic's 500 carries the request id; its writer passes Flush
+// through, so the /api/events stream still streams.
 func (s *Server) Handler() http.Handler {
 	return httpx.Chain(s.routes(),
 		httpx.AccessLog(s.log, httpx.AccessLogOptions{}),
 		httpx.Recover(s.log),
+		httpx.SecurityHeaders(""),
 	)
 }
 
@@ -83,17 +87,16 @@ func (s *Server) routes() http.Handler {
 	if assets == nil {
 		assets = web.FS()
 	}
-	if _, err := fs.Stat(assets, "index.html"); err != nil {
-		if s.log != nil {
-			s.log.Warn("web UI not built into this binary; serving a placeholder (build with `make build`)")
-		}
-		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = w.Write([]byte(notBuiltPage))
-		})
-		return mux
+	if !spa.Built(assets) && s.log != nil {
+		s.log.Warn("web UI not built into this binary; serving a placeholder (build with `make build`)")
 	}
-	mux.Handle("/", http.FileServer(http.FS(assets)))
+	// The UI has no client router and loads app.js/app.css by relative URL: only /
+	// gets the shell, so a nested path is a 404 rather than a shell whose assets
+	// resolve to more shells. /index.html stays a bookmarkable alias.
+	mux.Handle("GET /", spa.Handler(assets, spa.Options{
+		Routes:      func(p string) bool { return p == "/" || p == "/index.html" },
+		Placeholder: []byte(notBuiltPage),
+	}))
 	return mux
 }
 

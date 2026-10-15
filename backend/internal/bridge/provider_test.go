@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/trick77/relume-tv/internal/bridgepro"
+	"github.com/trick77/relume-tv/internal/clipv1"
 )
 
 // downClient models an unreachable Hue Bridge Pro: every write fails, so the provider's
@@ -260,6 +261,101 @@ func TestSetLightV1_firesOnForwardErr(t *testing.T) {
 	waitFor(t, func() bool { return errs.Load() == 1 })
 }
 
+// Close is the shutdown fence: the write in flight finishes before it returns, the
+// queued ones and any later one never reach the Pro, so nothing lands behind the
+// lights-off.
+func TestClose_waitsForTheWriteInFlightAndDropsTheRest(t *testing.T) {
+	// Given: one write held in flight at the Pro, two more queued behind it
+	gate := make(chan struct{})
+	fc := &fakeClient{gate: gate}
+	p := newTestProvider(fc)
+	p.SetLightV1("1", map[string]any{"ct": 1})
+	waitFor(t, func() bool { return fc.calls() == 1 })
+	p.SetLightV1("1", map[string]any{"ct": 2})
+	p.SetLightV1("2", map[string]any{"ct": 3})
+
+	// When: Close runs while the write is still in flight
+	if p.Close(10 * time.Millisecond) {
+		t.Fatal("Close = true while a write is still in flight")
+	}
+	closed := make(chan bool, 1)
+	go func() { closed <- p.Close(2 * time.Second) }()
+	select {
+	case <-closed:
+		t.Fatal("Close returned before the write in flight finished")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(gate)
+
+	// Then: it returns once that write is done, and nothing else is forwarded
+	if !<-closed {
+		t.Fatal("Close = false after the write in flight finished")
+	}
+	p.SetLightV1("1", map[string]any{"ct": 4}) // dropped synchronously: no drain starts
+	if got := fc.seen(); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("forwarded mirek = %v, want [1] (queued and later writes dropped)", got)
+	}
+	if !p.Close(time.Millisecond) {
+		t.Fatal("Close on an idle provider = false")
+	}
+}
+
+// clipv1's shutdown fence finds Close through this interface.
+var _ clipv1.LightWriteCloser = (*LightProvider)(nil)
+
+// The rest of a batch already taken by the drain is dropped once Close has run.
+func TestClose_dropsTheRestOfATakenBatch(t *testing.T) {
+	// Given: a drain holding a two-light batch, its first write in flight
+	gate := make(chan struct{})
+	fc := &fakeClient{gate: gate}
+	p := newTestProvider(fc)
+	p.pending = map[string]map[string]any{"1": {"ct": 1}, "2": {"ct": 2}}
+	p.drained = make(chan struct{})
+	go p.drain(p.drained)
+	waitFor(t, func() bool { return fc.calls() == 1 })
+
+	// When: Close runs, then the write in flight finishes
+	p.Close(0)
+	close(gate)
+	if !p.Close(2 * time.Second) {
+		t.Fatal("drain did not finish")
+	}
+
+	// Then: only that write reached the Pro
+	if got := fc.seen(); len(got) != 1 {
+		t.Fatalf("forwarded mirek = %v, want one write", got)
+	}
+}
+
+// A write whose light-list fetch outlasts the fence must not reach the Pro after it.
+func TestClose_dropsAWriteWhoseFetchOutlastsIt(t *testing.T) {
+	// Given: a fresh provider (no id mapping) whose first write waits on the list fetch
+	gate := make(chan struct{})
+	lc := &lightsClient{lights: []bridgepro.Light{colorLight("uuid-a")}, gate: gate}
+	p := &LightProvider{client: lc, pending: map[string]map[string]any{}}
+	p.SetLightV1("1", map[string]any{"ct": 200})
+	waitFor(t, func() bool { return lc.n() == 1 })
+
+	// When: the fence runs out while the fetch is in flight, then the fetch returns
+	if p.Close(0) {
+		t.Fatal("Close = true with the fetch in flight")
+	}
+	close(gate)
+	if !p.Close(2 * time.Second) {
+		t.Fatal("drain did not finish")
+	}
+
+	// Then: the light resolved, yet nothing was written
+	if _, ok := p.UUIDForV1("1"); !ok {
+		t.Fatal("light 1 did not resolve: the test would pass vacuously")
+	}
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+	if lc.writes != 0 {
+		t.Fatalf("SetLight calls = %d after Close, want 0", lc.writes)
+	}
+}
+
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -280,6 +376,7 @@ type lightsClient struct {
 	err    error
 	gate   chan struct{}
 	calls  int
+	writes int
 }
 
 func (c *lightsClient) Lights() ([]bridgepro.Light, error) {
@@ -293,7 +390,12 @@ func (c *lightsClient) Lights() ([]bridgepro.Light, error) {
 	return lights, err
 }
 
-func (c *lightsClient) SetLight(string, map[string]any) error { return nil }
+func (c *lightsClient) SetLight(string, map[string]any) error {
+	c.mu.Lock()
+	c.writes++
+	c.mu.Unlock()
+	return nil
+}
 
 func (c *lightsClient) n() int {
 	c.mu.Lock()

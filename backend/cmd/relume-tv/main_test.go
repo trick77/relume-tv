@@ -802,14 +802,23 @@ func TestTVHandler_servesProbesAndPassesTheRestToClip(t *testing.T) {
 		"/description.xml":  http.StatusTeapot,
 		"/api/user/lights/": http.StatusTeapot,
 	} {
-		// When
+		// When: from this host, as -healthcheck probes (kit answers the probes to loopback only)
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = "127.0.0.1:40000"
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		h.ServeHTTP(rec, req)
 
 		// Then
 		if rec.Code != want {
 			t.Errorf("GET %s = %d, want %d", path, rec.Code, want)
 		}
+	}
+
+	// A LAN caller (the TV) does not see the probes.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET /healthz from the LAN = %d, want 404", rec.Code)
 	}
 }
 

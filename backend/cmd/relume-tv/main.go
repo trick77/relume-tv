@@ -643,10 +643,21 @@ func runServe(opts serveOptions) error {
 		return err
 	}
 	log.Info("shutdown signal")
+	// TV light writes reach the Pro asynchronously (the provider's drain), and a TV
+	// request cut by a drain overrun may still be queueing one: close the write path
+	// and let the write in flight finish before the lights-off, or it lands behind it
+	// and switches a light back on. The wait overlaps the stream release below, so it
+	// adds to the stop time only when it outlasts it.
+	fenced := make(chan bool, 1)
+	go func() { fenced <- clip.CloseLightWrites(shutdownWriteBudget) }()
 	// Release relume-tv's own entertainment stream on the Pro before turning the lights
 	// off, so the Pro area is deactivated (StopStream uses the client's own timeout, not
 	// the cancelled ctx) and never leaks past process exit (Phase D).
 	stopEntertainment(entStreamer)
+	// A slow stream release may have outlasted the write: ask again before warning.
+	if !<-fenced && !clip.CloseLightWrites(0) {
+		log.Warn("a light write to the hue bridge pro is still in flight; turning off anyway", "after", shutdownWriteBudget.String())
+	}
 	// Stop accepting TV writes first (above), then turn the driven lights off so they
 	// don't stay frozen on their last Ambilight color across the restart. GetPro reads
 	// the current pairing under the mutex (watchPro may have reconnected it to a new IP
@@ -663,6 +674,13 @@ func runServe(opts serveOptions) error {
 // stall well past the container stop grace (then get SIGKILLed). This bounds it so
 // the process exits promptly.
 const shutdownTurnOffBudget = 3 * time.Second
+
+// shutdownWriteBudget caps the wait for the light write in flight before the
+// shutdown turn-off: one Pro round-trip on a healthy LAN. It runs alongside the
+// stream release, so with a responsive Pro the 5 s drain, the longer of the two and
+// the 3 s turn-off fit Docker's default 10 s stop grace; a Pro that stalls the
+// stream release (its 10 s client timeout) can push the turn-off past it.
+const shutdownWriteBudget = time.Second
 
 // turnOffBounded turns the driven lights off with a hard total deadline: it returns
 // after the turn-off completes or after max elapses (whichever first). On timeout the

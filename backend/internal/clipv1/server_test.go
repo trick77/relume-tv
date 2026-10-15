@@ -372,6 +372,48 @@ type fakeLightProvider struct{ lights map[string]any }
 func (f fakeLightProvider) LightsV1() (map[string]any, error)       { return f.lights, nil }
 func (f fakeLightProvider) SetLightV1(string, map[string]any) error { return nil }
 
+// closingProvider is a provider with a write queue to close (bridge.LightProvider's shape).
+type closingProvider struct {
+	fakeLightProvider
+	closes int
+	busy   bool // a write still in flight: Close reports false
+}
+
+func (p *closingProvider) Close(time.Duration) bool { p.closes++; return !p.busy }
+
+func TestCloseLightWrites(t *testing.T) {
+	s, _ := newTestServer(t)
+	if !s.CloseLightWrites(time.Second) {
+		t.Error("no provider: CloseLightWrites = false")
+	}
+	s, _ = newTestServer(t)
+	s.SetLightProvider(fakeLightProvider{})
+	if !s.CloseLightWrites(time.Second) {
+		t.Error("provider without a queue: CloseLightWrites = false")
+	}
+
+	// The current provider is closed; one still writing reports it.
+	s, _ = newTestServer(t)
+	cur := &closingProvider{busy: true}
+	s.SetLightProvider(cur)
+	if cur.closes != 0 {
+		t.Fatalf("provider closed %d times before shutdown, want 0", cur.closes)
+	}
+	if s.CloseLightWrites(10 * time.Millisecond) {
+		t.Error("CloseLightWrites = true while a write is still in flight")
+	}
+	if cur.closes != 1 {
+		t.Errorf("current provider closed %d times, want 1", cur.closes)
+	}
+
+	// A provider set after shutdown began (a re-pair racing it) starts closed.
+	late := &closingProvider{}
+	s.SetLightProvider(late)
+	if late.closes != 1 {
+		t.Errorf("provider set after CloseLightWrites closed %d times, want 1", late.closes)
+	}
+}
+
 // The TV reads the bulbs from the full datastore (GET /api/{user}), not from a
 // separate /lights call — so the datastore MUST surface the paired Pro's lights,
 // otherwise the TV reports "no hue color bulbs found".
