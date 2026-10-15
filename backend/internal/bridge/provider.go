@@ -78,9 +78,10 @@ type LightProvider struct {
 	draining bool
 	// drained is closed when the running drain exits (nil while none runs); closed
 	// refuses further writes once Close has run, so none lands after the shutdown
-	// lights-off.
+	// lights-off. closed is set under ctrlMu; atomic so the drain reads it per light
+	// without the lock.
 	drained chan struct{}
-	closed  bool
+	closed  atomic.Bool
 
 	// Forward errors are summarized rather than logged per failed write: the
 	// optimistic ack removes the old per-write back-pressure, so a down Hue Bridge Pro
@@ -227,7 +228,7 @@ func (p *LightProvider) V1ForUUID(uuid string) (string, bool) {
 // surfaced to the TV (latency over error reporting). Always returns nil.
 func (p *LightProvider) SetLightV1(v1id string, v1state map[string]any) error {
 	p.ctrlMu.Lock()
-	if p.closed {
+	if p.closed.Load() {
 		p.ctrlMu.Unlock()
 		return nil
 	}
@@ -272,7 +273,7 @@ func (p *LightProvider) drain(done chan struct{}) {
 		p.ctrlMu.Unlock()
 
 		for v1id, v1state := range batch {
-			if p.isClosed() {
+			if p.closed.Load() {
 				break
 			}
 			if err := p.forward(v1id, v1state); err != nil {
@@ -282,12 +283,6 @@ func (p *LightProvider) drain(done chan struct{}) {
 	}
 }
 
-func (p *LightProvider) isClosed() bool {
-	p.ctrlMu.Lock()
-	defer p.ctrlMu.Unlock()
-	return p.closed
-}
-
 // Close stops forwarding for good: later writes are dropped, queued ones discarded,
 // and it waits up to max for the write already on its way to the Pro. It reports
 // whether that write finished; false means it may still land (the Pro is slower
@@ -295,7 +290,7 @@ func (p *LightProvider) isClosed() bool {
 // cannot switch a light back on behind the turn-off.
 func (p *LightProvider) Close(max time.Duration) bool {
 	p.ctrlMu.Lock()
-	p.closed = true
+	p.closed.Store(true)
 	p.pending = map[string]map[string]any{}
 	done := p.drained
 	p.ctrlMu.Unlock()

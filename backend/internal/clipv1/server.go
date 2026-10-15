@@ -36,6 +36,13 @@ type LightProvider interface {
 	SetLightV1(v1id string, v1state map[string]any) error
 }
 
+// LightWriteCloser is a LightProvider whose writes can be fenced off for shutdown
+// (bridge.LightProvider; main asserts it at compile time). Close stops further
+// writes and waits up to max for the one in flight, reporting whether it finished.
+type LightWriteCloser interface {
+	Close(max time.Duration) bool
+}
+
 // Server serves the CLIP-v1 interface.
 type Server struct {
 	cfg      *config.Config
@@ -45,6 +52,10 @@ type Server struct {
 	started  time.Time // process start, reported as the whitelist create / update dates
 	lightsMu sync.RWMutex
 	lights   LightProvider
+	// retired are replaced providers whose last write may still be in flight;
+	// lightsClosed is set by CloseLightWrites (see SetLightProvider).
+	retired      []LightWriteCloser
+	lightsClosed bool
 	// Debug enables verbose request logging (User-Agent + body) — helpful for
 	// analyzing the real behavior of unknown TVs.
 	Debug bool
@@ -155,10 +166,28 @@ func (s *Server) MarkDTLSStreamDown() {
 // SetLightProvider registers the source for the light list (Hue Bridge Pro backend).
 // Safe to call at runtime: the backend may be paired asynchronously after the
 // HTTP server is already serving the TV.
+//
+// The replaced provider is closed (its queued writes dropped) and kept until its
+// write in flight is done, so CloseLightWrites can wait for it too. After
+// CloseLightWrites a newly set provider starts closed: a re-pair racing the
+// shutdown must not reopen the write path behind the lights-off.
 func (s *Server) SetLightProvider(p LightProvider) {
 	s.lightsMu.Lock()
+	defer s.lightsMu.Unlock()
+	if old, ok := s.lights.(LightWriteCloser); ok && s.lights != p {
+		s.retired = append(s.retired, old)
+	}
+	busy := s.retired[:0]
+	for _, c := range s.retired {
+		if !c.Close(0) {
+			busy = append(busy, c)
+		}
+	}
+	s.retired = busy
+	if c, ok := p.(LightWriteCloser); ok && s.lightsClosed {
+		c.Close(0)
+	}
 	s.lights = p
-	s.lightsMu.Unlock()
 }
 
 // ForwardLight pushes a light state (v1 id + state) to the Hue Bridge Pro via the
@@ -171,14 +200,25 @@ func (s *Server) ForwardLight(v1id string, state map[string]any) {
 	}
 }
 
-// CloseLightWrites closes the current provider to further light writes and waits up
-// to max for the one in flight (see bridge.LightProvider.Close). It reports whether
-// none can still land; true with no provider or one without a write queue.
-func (s *Server) CloseLightWrites(max time.Duration) bool {
-	if c, ok := s.lightProvider().(interface{ Close(time.Duration) bool }); ok {
-		return c.Close(max)
+// CloseLightWrites closes the light write path for good: the current provider, the
+// replaced ones whose last write is still in flight, and any set later. It waits up
+// to budget in total for the writes in flight and reports whether none can still land.
+func (s *Server) CloseLightWrites(budget time.Duration) bool {
+	s.lightsMu.Lock()
+	s.lightsClosed = true
+	closers := append([]LightWriteCloser(nil), s.retired...)
+	if c, ok := s.lights.(LightWriteCloser); ok {
+		closers = append(closers, c)
 	}
-	return true
+	s.lightsMu.Unlock()
+	deadline := time.Now().Add(budget)
+	done := true
+	for _, c := range closers {
+		if !c.Close(max(0, time.Until(deadline))) {
+			done = false
+		}
+	}
+	return done
 }
 
 // lightProvider returns the current backend (may be nil until the Pro is paired).

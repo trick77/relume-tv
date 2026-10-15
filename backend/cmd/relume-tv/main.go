@@ -672,9 +672,13 @@ func runServe(opts serveOptions) error {
 const shutdownTurnOffBudget = 3 * time.Second
 
 // shutdownWriteBudget caps the wait for the light write in flight before the
-// shutdown turn-off: one Pro round-trip on a healthy LAN, short enough that the
-// drain, this wait and the turn-off stay inside a container's stop grace.
-const shutdownWriteBudget = 2 * time.Second
+// shutdown turn-off: one Pro round-trip on a healthy LAN. The 5 s drain, this wait
+// and the 3 s turn-off sum to 9 s, under Docker's default 10 s stop grace.
+const shutdownWriteBudget = time.Second
+
+// The shutdown fence (clip.CloseLightWrites) finds Close through this interface: a
+// changed signature must fail the build, not silently drop the fence.
+var _ clipv1.LightWriteCloser = (*bridge.LightProvider)(nil)
 
 // turnOffBounded turns the driven lights off with a hard total deadline: it returns
 // after the turn-off completes or after max elapses (whichever first). On timeout the

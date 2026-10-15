@@ -375,25 +375,43 @@ func (f fakeLightProvider) SetLightV1(string, map[string]any) error { return nil
 // closingProvider is a provider with a write queue to close (bridge.LightProvider's shape).
 type closingProvider struct {
 	fakeLightProvider
-	got  time.Duration
-	busy bool
+	closes int
+	busy   bool // a write still in flight: Close reports false
 }
 
-func (p *closingProvider) Close(max time.Duration) bool { p.got = max; return !p.busy }
+func (p *closingProvider) Close(time.Duration) bool { p.closes++; return !p.busy }
 
 func TestCloseLightWrites(t *testing.T) {
 	s, _ := newTestServer(t)
 	if !s.CloseLightWrites(time.Second) {
 		t.Error("no provider: CloseLightWrites = false")
 	}
+	s, _ = newTestServer(t)
 	s.SetLightProvider(fakeLightProvider{})
 	if !s.CloseLightWrites(time.Second) {
 		t.Error("provider without a queue: CloseLightWrites = false")
 	}
-	p := &closingProvider{busy: true}
-	s.SetLightProvider(p)
-	if s.CloseLightWrites(time.Second) || p.got != time.Second {
-		t.Errorf("busy provider: CloseLightWrites passed max %v and reported done", p.got)
+
+	// A replaced provider still writing is closed at once and waited for at shutdown.
+	s, _ = newTestServer(t)
+	old, cur := &closingProvider{busy: true}, &closingProvider{}
+	s.SetLightProvider(old)
+	s.SetLightProvider(cur)
+	if old.closes != 1 || cur.closes != 0 {
+		t.Fatalf("after replace: old closed %d, current closed %d; want 1, 0", old.closes, cur.closes)
+	}
+	if s.CloseLightWrites(10 * time.Millisecond) {
+		t.Error("CloseLightWrites = true while the replaced provider is still writing")
+	}
+	if cur.closes != 1 {
+		t.Errorf("current provider closed %d times, want 1", cur.closes)
+	}
+
+	// A provider set after shutdown began (a re-pair racing it) starts closed.
+	late := &closingProvider{}
+	s.SetLightProvider(late)
+	if late.closes != 1 {
+		t.Errorf("provider set after CloseLightWrites closed %d times, want 1", late.closes)
 	}
 }
 
