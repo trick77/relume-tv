@@ -60,15 +60,22 @@ func (s *Server) runSnapshotLoop(ctx context.Context) {
 }
 
 // Handler returns the routed HTTP handler behind kit's access log (routine requests
-// at debug, probes never), panic recovery and baseline security headers (the UI
-// loads nothing from elsewhere, so kit's default CSP fits). AccessLog is outermost,
+// at debug, probes never), baseline security headers (the UI loads nothing from
+// elsewhere, so kit's default CSP fits) and panic recovery. AccessLog is outermost,
 // so a recovered panic's 500 carries the request id; its writer passes Flush
 // through, so the /api/events stream still streams.
 func (s *Server) Handler() http.Handler {
-	return httpx.Chain(s.routes(),
+	return s.wrap(s.routes())
+}
+
+// wrap is Handler's middleware around h. SecurityHeaders sits outside Recover:
+// Recover restores the header it saw on entry before a panic's 500 (kit v0.13.0
+// on), so inside it the 500 would lose them.
+func (s *Server) wrap(h http.Handler) http.Handler {
+	return httpx.Chain(h,
 		httpx.AccessLog(s.log, httpx.AccessLogOptions{}),
-		httpx.Recover(s.log),
 		httpx.SecurityHeaders(""),
+		httpx.Recover(s.log),
 	)
 }
 

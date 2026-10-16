@@ -148,6 +148,28 @@ func TestNewHTTPServerSetsHeaderTimeoutOnly(t *testing.T) {
 	}
 }
 
+func TestServer_PanicKeepsSecurityHeaders(t *testing.T) {
+	srv := NewServer(":0", NewHub(8), fakeSource{}, discardLog())
+	h := srv.wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") }))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/state", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	for _, h := range []string{"Content-Security-Policy", "X-Frame-Options", "X-Content-Type-Options", "Referrer-Policy"} {
+		if rec.Header().Get(h) == "" {
+			t.Errorf("no %s on the 500", h)
+		}
+	}
+
+	// Handler is wrap around the routes: its ordinary responses carry them too.
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/state", nil))
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("Handler: X-Content-Type-Options = %q, want nosniff", got)
+	}
+}
+
 func TestServer_HealthProbes(t *testing.T) {
 	h := NewServer(":0", NewHub(8), fakeSource{}, discardLog()).Handler()
 	for _, path := range []string{"/healthz", "/readyz"} {
