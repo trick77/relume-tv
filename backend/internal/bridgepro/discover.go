@@ -1,16 +1,17 @@
 package bridgepro
 
 import (
-	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/grandcat/zeroconf"
+	"github.com/hashicorp/mdns"
+	"github.com/trick77/relume-tv/internal/netutil"
 )
 
 // ModelHueBridgePro is the modelid a real Hue Bridge Pro reports — in its mDNS TXT
@@ -22,7 +23,7 @@ const ModelHueBridgePro = "BSB003"
 
 const (
 	hueServiceName  = "_hue._tcp"
-	mdnsDomain      = "local."
+	mdnsDomain      = "local"
 	discoverTimeout = 3 * time.Second
 )
 
@@ -43,28 +44,42 @@ type DiscoveredBridge struct {
 // excludeBridgeID drops relume-tv's OWN announcement: relume-tv advertises itself as a Hue
 // bridge (_hue._tcp, modelid BSB002) to the TV, so without this filter a setup with no
 // real bridge present would "discover" relume-tv and mislabel it as a non-Pro bridge.
-func Discover(excludeBridgeID string) ([]DiscoveredBridge, error) {
-	resolver, err := zeroconf.NewResolver(nil)
-	if err != nil {
-		return nil, fmt.Errorf("mdns resolver: %w", err)
+//
+// iface is the interface owning the advertise IP: the query is multicast out of it
+// instead of the system default, which on a multi-NIC host may face the wrong LAN.
+// nil keeps the system default.
+func Discover(excludeBridgeID string, iface *net.Interface, log *slog.Logger) ([]DiscoveredBridge, error) {
+	// Drained only after Query returns, and the library drops an entry it cannot
+	// buffer: room for every _hue._tcp answerer a LAN plus a reflector can produce.
+	entries := make(chan *mdns.ServiceEntry, 64)
+	params := mdns.DefaultParams(hueServiceName)
+	params.Domain = mdnsDomain
+	params.Timeout = discoverTimeout
+	params.Entries = entries
+	params.DisableIPv6 = true
+	params.Interface = iface
+	// iface only steers the outgoing query (IP_MULTICAST_IF); the library joins
+	// the multicast group on the system-default interface, so a multicast reply
+	// on the advertise interface could be missed. The QU bit asks the bridge to
+	// answer unicast, which lands on the client's unicast socket regardless.
+	params.WantUnicastResponse = true
+	params.Logger = netutil.MDNSLogger(log)
+
+	if err := mdns.Query(params); err != nil {
+		return nil, fmt.Errorf("mdns query: %w", err)
 	}
-	entries := make(chan *zeroconf.ServiceEntry, 16)
-	ctx, cancel := context.WithTimeout(context.Background(), discoverTimeout)
-	defer cancel()
-	if err := resolver.Browse(ctx, hueServiceName, mdnsDomain, entries); err != nil {
-		return nil, fmt.Errorf("mdns browse: %w", err)
-	}
+	// Query() has returned, so nothing sends on entries anymore — safe to close
+	// and drain whatever is buffered.
+	close(entries)
 
 	seen := map[string]bool{}
 	var out []DiscoveredBridge
-	// Browse closes entries when the context expires (after discoverTimeout), so this
-	// range collects everything that answered within the window, then returns.
 	for e := range entries {
-		ip := firstIPv4(e.AddrIPv4)
-		if ip == "" {
+		if e.AddrV4 == nil {
 			continue
 		}
-		bridgeID, modelID := parseHueTXT(e.Text)
+		ip := e.AddrV4.String()
+		bridgeID, modelID := parseHueTXT(e.InfoFields)
 		if excludeBridgeID != "" && strings.EqualFold(bridgeID, excludeBridgeID) {
 			continue // relume-tv's own announcement
 		}
@@ -97,17 +112,6 @@ func parseHueTXT(txt []string) (bridgeID, modelID string) {
 		}
 	}
 	return bridgeID, modelID
-}
-
-// firstIPv4 returns the first IPv4 address as a string (Hue bridges are IPv4-only), or
-// "" if none is present.
-func firstIPv4(ips []net.IP) string {
-	for _, ip := range ips {
-		if v4 := ip.To4(); v4 != nil {
-			return v4.String()
-		}
-	}
-	return ""
 }
 
 // FetchModelID reads the unauthenticated short config (GET https://<host>/api/0/config)

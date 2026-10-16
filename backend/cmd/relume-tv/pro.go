@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"time"
 
 	"github.com/trick77/ship/kit/run"
@@ -182,7 +183,7 @@ func (w *proWatcher) discoverThrottle() time.Duration {
 }
 
 // newProWatcher constructs a proWatcher with the production seams wired in.
-func newProWatcher(cfg *config.Config, clip *clipv1.Server, controlled *bridge.ControlledSet, live *liveColors, stats *proStats, skipTLS bool, log *slog.Logger) *proWatcher {
+func newProWatcher(cfg *config.Config, iface *net.Interface, clip *clipv1.Server, controlled *bridge.ControlledSet, live *liveColors, stats *proStats, skipTLS bool, log *slog.Logger) *proWatcher {
 	w := &proWatcher{
 		cfg:        cfg,
 		clip:       clip,
@@ -203,7 +204,7 @@ func newProWatcher(cfg *config.Config, clip *clipv1.Server, controlled *bridge.C
 	// Browse mDNS for Hue bridges, excluding relume-tv's own announcement (it advertises
 	// itself as a Hue bridge to the TV under the same bridge id).
 	w.discover = func() ([]bridgepro.DiscoveredBridge, error) {
-		return bridgepro.Discover(cfg.Identity.BridgeID())
+		return bridgepro.Discover(cfg.Identity.BridgeID(), iface, log)
 	}
 	w.fetchFingerprint = bridgepro.FetchLeafFingerprint
 	w.applyProvider = func(p *config.BridgePro) {

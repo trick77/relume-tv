@@ -4,7 +4,10 @@ package netutil
 
 import (
 	"fmt"
+	"log"
+	"log/slog"
 	"net"
+	"strings"
 )
 
 // InterfaceForIP returns the multicast-capable, up interface that carries the
@@ -78,4 +81,35 @@ func isVirtualName(name string) bool {
 		}
 	}
 	return false
+}
+
+// MDNSLogger adapts hashicorp/mdns's *log.Logger sink (server and client) onto
+// our slog.Logger. Without it the library writes to Go's default logger, i.e.
+// raw stderr lines outside the structured log.
+func MDNSLogger(sl *slog.Logger) *log.Logger {
+	return log.New(mdnsLogFilter{log: sl}, "", 0)
+}
+
+// mdnsLogFilter: bind failures at WARN (the responder is deaf then), everything
+// else at DEBUG. The announce server binds the shared mDNS multicast group, so
+// it sees — and tries to handle — every mDNS packet on the LAN: each query with
+// the TC bit (a known-answer list, RFC 6762 §7.2, any iOS/macOS browser) and
+// each NSEC record miekg/dns cannot unpack ("buffer size too small") is an
+// "[ERR]" line with the packet dumped into it. The server skips that one packet
+// and keeps answering; at WARN that stream buries the log.
+//
+// Dropped outright: "Closing client", the query client's struct dump on every
+// Close (the setup wizard polls discovery).
+type mdnsLogFilter struct{ log *slog.Logger }
+
+func (w mdnsLogFilter) Write(p []byte) (int, error) {
+	line := strings.TrimRight(string(p), "\n")
+	switch {
+	case strings.Contains(line, "Closing client"):
+	case strings.Contains(line, "Failed to bind"):
+		w.log.Warn(line)
+	default:
+		w.log.Debug(line)
+	}
+	return len(p), nil
 }
