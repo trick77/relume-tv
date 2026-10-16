@@ -6,7 +6,7 @@ require (
 	github.com/hashicorp/mdns v1.0.6
 	github.com/miekg/dns v1.1.73
 	github.com/pion/dtls/v3 v3.1.10
-	github.com/trick77/ship/kit v0.13.1
+	github.com/trick77/ship/kit v0.16.0
 )
 
 require (
