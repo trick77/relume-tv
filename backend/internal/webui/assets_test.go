@@ -108,7 +108,7 @@ func TestIndexWithoutBuiltUIExplains(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "make build") {
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "not built") {
 		t.Fatalf("code = %d, body = %q", rec.Code, rec.Body.String())
 	}
 
