@@ -15,11 +15,6 @@ import (
 	"github.com/trick77/relume-tv/web"
 )
 
-// notBuiltPage is kit spa's placeholder (503) when the binary was built without the
-// UI copied into web/dist (a bare `go build` on a fresh clone): kit's default names
-// another repo's make target.
-const notBuiltPage = `<!doctype html><title>relume-tv</title><p>Web UI not built into this binary. Run <code>make build</code>.</p>`
-
 // Server is the web UI HTTP server. It is separate from the TV-facing clipv1
 // server and runs by default (suppressed by -headless).
 type Server struct {
@@ -92,10 +87,10 @@ func (s *Server) routes() http.Handler {
 	}
 	// The UI has no client router and loads app.js/app.css by relative URL: only /
 	// gets the shell, so a nested path is a 404 rather than a shell whose assets
-	// resolve to more shells. /index.html stays a bookmarkable alias.
+	// resolve to more shells. /index.html stays a bookmarkable alias. An unbuilt binary
+	// (a bare `go build` on a fresh clone) gets kit's "UI not built" page and a 503.
 	mux.Handle("GET /", spa.Handler(assets, spa.Options{
-		Routes:      func(p string) bool { return p == "/" || p == "/index.html" },
-		Placeholder: []byte(notBuiltPage),
+		Routes: func(p string) bool { return p == "/" || p == "/index.html" },
 	}))
 	return mux
 }
