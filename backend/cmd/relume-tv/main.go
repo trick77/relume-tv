@@ -29,6 +29,7 @@ import (
 	"github.com/trick77/relume-tv/internal/diag"
 	"github.com/trick77/relume-tv/internal/entertainment"
 	"github.com/trick77/relume-tv/internal/mdns"
+	"github.com/trick77/relume-tv/internal/netutil"
 	"github.com/trick77/relume-tv/internal/ssdp"
 	"github.com/trick77/relume-tv/internal/webui"
 )
@@ -319,6 +320,12 @@ func runServe(opts serveOptions) error {
 			return fmt.Errorf("auto-detect advertise-ip: %w (use -advertise-ip)", err)
 		}
 	}
+	// The interface owning the advertise IP: Pro discovery multicasts out of it. The
+	// announcers resolve it themselves. nil = system default.
+	iface, ierr := netutil.InterfaceForIP(ip)
+	if ierr != nil {
+		log.Warn("interface for advertise IP not found, discovery uses the system default", "err", ierr)
+	}
 	log.Info("relume-tv", "version", version.String())
 	log.Info("identity", "serial", cfg.Identity.Serial, "bridgeid", cfg.Identity.BridgeID(), "advertise", ip)
 	// Dump the saved state on startup (no secrets): which Hue Bridge Pro is paired and
@@ -426,14 +433,14 @@ func runServe(opts serveOptions) error {
 	// empty light list until the Pro pairing completes, then hot-loads the lights.
 	if pro == nil {
 		log.Warn("no hue bridge pro paired yet – auto-pairing in background; TAP the hue bridge pro link button")
-		go autoPairPro(ctx, cfg, clip, controlled, liveColors, proStats, setup, opts.skipTLS, log)
+		go autoPairPro(ctx, cfg, iface, clip, controlled, liveColors, proStats, setup, opts.skipTLS, log)
 	} else {
 		// No restart turn-off at startup: the controlled set is empty here (no TV write
 		// captured yet), so we have nothing to turn off. The lights are turned off on
 		// shutdown below — on `docker compose up -d` the old container gets SIGTERM and
 		// turns the currently-driven Ambilight bulbs off first.
 		// Keep the already-paired Pro reachable across reboots / IP changes.
-		w := newProWatcher(cfg, clip, controlled, liveColors, proStats, opts.skipTLS, log)
+		w := newProWatcher(cfg, iface, clip, controlled, liveColors, proStats, opts.skipTLS, log)
 		go w.run(ctx)
 	}
 
@@ -822,11 +829,11 @@ const setupWatcherInterval = 4 * time.Second
 // step that cannot be automated). It reports the discovery preconditions to the setup
 // wizard, and on success persists the credentials, hot-loads the light backend and
 // starts the setup reachability watcher (steps 3 & 5).
-func autoPairPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, controlled *bridge.ControlledSet, live *liveColors, stats *proStats, setup *setupStatus, skipTLS bool, log *slog.Logger) {
+func autoPairPro(ctx context.Context, cfg *config.Config, iface *net.Interface, clip *clipv1.Server, controlled *bridge.ControlledSet, live *liveColors, stats *proStats, setup *setupStatus, skipTLS bool, log *slog.Logger) {
 	// Browse mDNS for Hue bridges, excluding relume-tv's own announcement (it advertises
 	// itself as a Hue bridge to the TV under this same bridge id).
 	discover := func() ([]bridgepro.DiscoveredBridge, error) {
-		return bridgepro.Discover(cfg.Identity.BridgeID())
+		return bridgepro.Discover(cfg.Identity.BridgeID(), iface, log)
 	}
 	var host, discoveryID string
 	for host == "" {
@@ -911,7 +918,7 @@ func autoPairPro(ctx context.Context, cfg *config.Config, clip *clipv1.Server, c
 	// reconnect, so a DHCP IP change after the step-5 power-cycle is followed) AND feeds
 	// setup.setReachable each tick so steps 3 and 5 advance. Faster cadence than the
 	// steady-state watcher so the power-cycle transitions feel responsive.
-	w := newProWatcher(cfg, clip, controlled, live, stats, skipTLS, log)
+	w := newProWatcher(cfg, iface, clip, controlled, live, stats, skipTLS, log)
 	w.interval = setupWatcherInterval
 	w.onReachable = setup.setReachable
 	go w.run(ctx)

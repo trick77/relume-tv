@@ -9,10 +9,8 @@ package mdns
 import (
 	"context"
 	"fmt"
-	"log"
 	"log/slog"
 	"net"
-	"strings"
 	"time"
 
 	"github.com/hashicorp/mdns"
@@ -79,7 +77,7 @@ func (a *Announcer) Run(ctx context.Context) error {
 	server, err := mdns.NewServer(&mdns.Config{
 		Zone:   svc,
 		Iface:  iface,
-		Logger: log.New(mdnsLogFilter{log: a.log}, "", 0),
+		Logger: netutil.MDNSLogger(a.log),
 	})
 	if err != nil {
 		return fmt.Errorf("mdns register: %w", err)
@@ -125,25 +123,4 @@ func (a *Announcer) serviceSpec() serviceSpec {
 			"modelid=BSB002",
 		},
 	}
-}
-
-// mdnsLogFilter adapts hashicorp/mdns's *log.Logger sink onto our slog.Logger,
-// and drops "buffer size too small" unpack failures (typically
-// "NSEC.NextDomain: dns: buffer size too small"). Our announce server binds
-// the shared mDNS multicast group, so it sees — and tries to unpack — every
-// mDNS packet on the LAN, not just Hue-related ones; a known miekg/dns gap in
-// parsing certain NSEC records (e.g. another device's RFC 6762 §6.1 negative
-// response) then fires repeatedly for as long as that device keeps
-// broadcasting. It's cosmetic: the server just skips that one malformed
-// packet and keeps answering every other query fine, so it doesn't warrant
-// WARN-level noise on every occurrence. Everything else still passes through.
-type mdnsLogFilter struct{ log *slog.Logger }
-
-func (w mdnsLogFilter) Write(p []byte) (int, error) {
-	line := strings.TrimRight(string(p), "\n")
-	if strings.Contains(line, "buffer size too small") {
-		return len(p), nil
-	}
-	w.log.Warn("mdns", "msg", line)
-	return len(p), nil
 }

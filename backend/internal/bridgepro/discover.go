@@ -4,11 +4,14 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/hashicorp/mdns"
+	"github.com/trick77/relume-tv/internal/netutil"
 )
 
 // ModelHueBridgePro is the modelid a real Hue Bridge Pro reports — in its mDNS TXT
@@ -41,13 +44,19 @@ type DiscoveredBridge struct {
 // excludeBridgeID drops relume-tv's OWN announcement: relume-tv advertises itself as a Hue
 // bridge (_hue._tcp, modelid BSB002) to the TV, so without this filter a setup with no
 // real bridge present would "discover" relume-tv and mislabel it as a non-Pro bridge.
-func Discover(excludeBridgeID string) ([]DiscoveredBridge, error) {
+//
+// iface is the interface owning the advertise IP: the query is multicast out of it
+// instead of the system default, which on a multi-NIC host may face the wrong LAN.
+// nil keeps the system default.
+func Discover(excludeBridgeID string, iface *net.Interface, log *slog.Logger) ([]DiscoveredBridge, error) {
 	entries := make(chan *mdns.ServiceEntry, 16)
 	params := mdns.DefaultParams(hueServiceName)
 	params.Domain = mdnsDomain
 	params.Timeout = discoverTimeout
 	params.Entries = entries
 	params.DisableIPv6 = true
+	params.Interface = iface
+	params.Logger = netutil.MDNSLogger(log)
 
 	if err := mdns.Query(params); err != nil {
 		return nil, fmt.Errorf("mdns query: %w", err)

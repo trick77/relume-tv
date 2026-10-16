@@ -4,7 +4,10 @@ package netutil
 
 import (
 	"fmt"
+	"log"
+	"log/slog"
 	"net"
+	"strings"
 )
 
 // InterfaceForIP returns the multicast-capable, up interface that carries the
@@ -78,4 +81,34 @@ func isVirtualName(name string) bool {
 		}
 	}
 	return false
+}
+
+// MDNSLogger adapts hashicorp/mdns's *log.Logger sink (server and client) onto
+// our slog.Logger. Without it the library writes to Go's default logger, i.e.
+// raw stderr lines outside the structured log.
+func MDNSLogger(sl *slog.Logger) *log.Logger {
+	return log.New(mdnsLogFilter{log: sl}, "", 0)
+}
+
+// mdnsLogFilter drops two cosmetic lines and forwards the rest at WARN.
+//
+// "buffer size too small" unpack failures (typically "NSEC.NextDomain: dns:
+// buffer size too small"): the announce server binds the shared mDNS multicast
+// group, so it sees — and tries to unpack — every mDNS packet on the LAN, not
+// just Hue-related ones; a known miekg/dns gap in parsing certain NSEC records
+// (e.g. another device's RFC 6762 §6.1 negative response) then fires repeatedly
+// for as long as that device keeps broadcasting. The server just skips that one
+// malformed packet and keeps answering every other query fine.
+//
+// "Closing client": the query client logs its own struct dump at INFO on every
+// Close, and the setup wizard polls discovery.
+type mdnsLogFilter struct{ log *slog.Logger }
+
+func (w mdnsLogFilter) Write(p []byte) (int, error) {
+	line := strings.TrimRight(string(p), "\n")
+	if strings.Contains(line, "buffer size too small") || strings.Contains(line, "Closing client") {
+		return len(p), nil
+	}
+	w.log.Warn("mdns", "msg", line)
+	return len(p), nil
 }
