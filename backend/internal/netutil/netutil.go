@@ -90,25 +90,26 @@ func MDNSLogger(sl *slog.Logger) *log.Logger {
 	return log.New(mdnsLogFilter{log: sl}, "", 0)
 }
 
-// mdnsLogFilter drops two cosmetic lines and forwards the rest at WARN.
+// mdnsLogFilter: bind failures at WARN (the responder is deaf then), everything
+// else at DEBUG. The announce server binds the shared mDNS multicast group, so
+// it sees — and tries to handle — every mDNS packet on the LAN: each query with
+// the TC bit (a known-answer list, RFC 6762 §7.2, any iOS/macOS browser) and
+// each NSEC record miekg/dns cannot unpack ("buffer size too small") is an
+// "[ERR]" line with the packet dumped into it. The server skips that one packet
+// and keeps answering; at WARN that stream buries the log.
 //
-// "buffer size too small" unpack failures (typically "NSEC.NextDomain: dns:
-// buffer size too small"): the announce server binds the shared mDNS multicast
-// group, so it sees — and tries to unpack — every mDNS packet on the LAN, not
-// just Hue-related ones; a known miekg/dns gap in parsing certain NSEC records
-// (e.g. another device's RFC 6762 §6.1 negative response) then fires repeatedly
-// for as long as that device keeps broadcasting. The server just skips that one
-// malformed packet and keeps answering every other query fine.
-//
-// "Closing client": the query client logs its own struct dump at INFO on every
-// Close, and the setup wizard polls discovery.
+// Dropped outright: "Closing client", the query client's struct dump on every
+// Close (the setup wizard polls discovery).
 type mdnsLogFilter struct{ log *slog.Logger }
 
 func (w mdnsLogFilter) Write(p []byte) (int, error) {
 	line := strings.TrimRight(string(p), "\n")
-	if strings.Contains(line, "buffer size too small") || strings.Contains(line, "Closing client") {
-		return len(p), nil
+	switch {
+	case strings.Contains(line, "Closing client"):
+	case strings.Contains(line, "Failed to bind"):
+		w.log.Warn(line)
+	default:
+		w.log.Debug(line)
 	}
-	w.log.Warn("mdns", "msg", line)
 	return len(p), nil
 }

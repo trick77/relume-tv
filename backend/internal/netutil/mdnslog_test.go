@@ -7,25 +7,28 @@ import (
 	"testing"
 )
 
-func TestMDNSLogger_dropsNoiseAndForwardsTheRest(t *testing.T) {
+func TestMDNSLogger_bindFailuresWarnTheRestDebugs(t *testing.T) {
 	// Given
 	var buf bytes.Buffer
-	l := MDNSLogger(slog.New(slog.NewTextHandler(&buf, nil)))
+	l := MDNSLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 
 	// When
-	l.Printf("[ERR] mdns: Failed to unpack packet: dns: overflow unpacking NSEC.NextDomain: dns: buffer size too small")
 	l.Printf("[INFO] mdns: Closing client {true false ...}")
-	l.Printf("[ERR] mdns: Failed to bind to udp port: address in use")
+	l.Printf("[ERR] mdns: Failed to handle query: [ERR] mdns: support for DNS requests with high truncated bit not implemented: {...}")
+	l.Printf("[ERR] mdns: Failed to bind to udp4 port: address in use")
 
 	// Then
-	out := buf.String()
-	if strings.Contains(out, "buffer size too small") || strings.Contains(out, "Closing client") {
-		t.Errorf("noise was forwarded: %q", out)
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines, want 2 (Closing client dropped):\n%s", len(lines), buf.String())
 	}
-	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "address in use") {
-		t.Errorf("other line not forwarded at WARN: %q", out)
+	if !strings.HasPrefix(strings.SplitN(lines[0], " ", 2)[1], "level=DEBUG") || !strings.Contains(lines[0], "truncated bit") {
+		t.Errorf("handle-query line not at DEBUG: %q", lines[0])
 	}
-	if strings.Contains(out, `\n"`) {
-		t.Errorf("trailing newline not trimmed: %q", out)
+	if !strings.Contains(lines[1], "level=WARN") || !strings.Contains(lines[1], `msg="[ERR] mdns: Failed to bind to udp4 port: address in use"`) {
+		t.Errorf("bind failure not at WARN as the message: %q", lines[1])
+	}
+	if strings.Contains(buf.String(), `\n"`) {
+		t.Errorf("trailing newline not trimmed: %q", buf.String())
 	}
 }

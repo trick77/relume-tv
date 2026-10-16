@@ -49,13 +49,20 @@ type DiscoveredBridge struct {
 // instead of the system default, which on a multi-NIC host may face the wrong LAN.
 // nil keeps the system default.
 func Discover(excludeBridgeID string, iface *net.Interface, log *slog.Logger) ([]DiscoveredBridge, error) {
-	entries := make(chan *mdns.ServiceEntry, 16)
+	// Drained only after Query returns, and the library drops an entry it cannot
+	// buffer: room for every _hue._tcp answerer a LAN plus a reflector can produce.
+	entries := make(chan *mdns.ServiceEntry, 64)
 	params := mdns.DefaultParams(hueServiceName)
 	params.Domain = mdnsDomain
 	params.Timeout = discoverTimeout
 	params.Entries = entries
 	params.DisableIPv6 = true
 	params.Interface = iface
+	// iface only steers the outgoing query (IP_MULTICAST_IF); the library joins
+	// the multicast group on the system-default interface, so a multicast reply
+	// on the advertise interface could be missed. The QU bit asks the bridge to
+	// answer unicast, which lands on the client's unicast socket regardless.
+	params.WantUnicastResponse = true
 	params.Logger = netutil.MDNSLogger(log)
 
 	if err := mdns.Query(params); err != nil {
