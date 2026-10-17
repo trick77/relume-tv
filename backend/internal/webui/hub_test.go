@@ -1,6 +1,9 @@
 package webui
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestHub_RingBufferDropsOldest(t *testing.T) {
 	h := NewHub(2)
@@ -39,8 +42,17 @@ func TestHub_SnapshotEvictsWhenFull(t *testing.T) {
 	h := NewHub(8)
 	ch, cancel, _ := h.Subscribe()
 	defer cancel()
-	for range subBuffer + 8 {
-		h.PublishEvent(Event{Msg: "flood"})
+	flooded := make(chan struct{})
+	go func() {
+		for range subBuffer + 8 {
+			h.PublishEvent(Event{Msg: "flood"})
+		}
+		close(flooded)
+	}()
+	select {
+	case <-flooded:
+	case <-time.After(2 * time.Second):
+		t.Fatal("PublishEvent blocked on a full subscriber")
 	}
 
 	// When
