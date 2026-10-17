@@ -79,7 +79,7 @@ func TestServer_PeriodicSnapshotPublished(t *testing.T) {
 	srv := NewServer(":0", hub, fakeSource{}, discardLog())
 	srv.snapInterval = 10 * time.Millisecond
 
-	ch, cancel := hub.Subscribe()
+	ch, cancel, _ := hub.Subscribe()
 	defer cancel()
 
 	ctx, cancelCtx := context.WithCancel(context.Background())
@@ -122,6 +122,122 @@ func TestServer_SSEStreamsInitialSnapshot(t *testing.T) {
 		}
 	}
 	t.Fatal("no snapshot frame received")
+}
+
+// noFlushWriter hides the recorder's Flush.
+type noFlushWriter struct{ http.ResponseWriter }
+
+func TestServer_SSEWithoutFlushIs500(t *testing.T) {
+	srv := NewServer(":0", NewHub(8), fakeSource{}, discardLog())
+	rec := httptest.NewRecorder()
+	srv.handleEvents(noFlushWriter{rec}, httptest.NewRequest(http.MethodGet, "/api/events", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("code = %d, want 500", rec.Code)
+	}
+}
+
+func TestServer_SSEEndsOnClosedHub(t *testing.T) {
+	// Given: a hub already closed for shutdown
+	hub := NewHub(8)
+	hub.Close()
+	srv := NewServer(":0", hub, fakeSource{}, discardLog())
+
+	// When / Then: the handler paints and returns instead of waiting on a nil channel
+	done := make(chan struct{})
+	go func() {
+		srv.handleEvents(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/events", nil))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream on a closed hub did not end")
+	}
+}
+
+// failingWriter fails every write once fail is set: a client that went away.
+type failingWriter struct {
+	*httptest.ResponseRecorder
+	fail atomic.Bool
+}
+
+func (w *failingWriter) Write(b []byte) (int, error) {
+	if w.fail.Load() {
+		return 0, io.ErrClosedPipe
+	}
+	return w.ResponseRecorder.Write(b)
+}
+
+func TestServer_SSEEndsOnFailedWrite(t *testing.T) {
+	// Given: a subscribed stream
+	hub := NewHub(8)
+	srv := NewServer(":0", hub, fakeSource{}, discardLog())
+	w := &failingWriter{ResponseRecorder: httptest.NewRecorder()}
+	done := make(chan struct{})
+	go func() {
+		srv.handleEvents(w, httptest.NewRequest(http.MethodGet, "/api/events", nil))
+		close(done)
+	}()
+	for deadline := time.Now().Add(2 * time.Second); !hub.hasSubscribers(); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("stream never subscribed")
+		}
+	}
+
+	// When: the client is gone and a frame is pushed
+	w.fail.Store(true)
+	hub.PublishEvent(Event{Msg: "x"})
+
+	// Then: the handler returns and unsubscribes, so the snapshot loop goes idle
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not end on a failed write")
+	}
+	if hub.hasSubscribers() {
+		t.Fatal("subscriber left behind after the stream ended")
+	}
+}
+
+func TestServer_SSEReplaysSnapshotThenTail(t *testing.T) {
+	// Given: events buffered before the client connects
+	hub := NewHub(8)
+	hub.PublishEvent(Event{Msg: "a"})
+	hub.PublishEvent(Event{Msg: "b"})
+	srv := httptest.NewServer(NewServer(":0", hub, fakeSource{}, discardLog()).Handler())
+	defer srv.Close()
+
+	// When
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/events", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	// Then: the snapshot first, then the tail oldest first
+	var got []string
+	sc := bufio.NewScanner(resp.Body)
+	for len(got) < 3 && sc.Scan() {
+		data, ok := strings.CutPrefix(sc.Text(), "data: ")
+		if !ok {
+			continue
+		}
+		var f Frame
+		if err := json.Unmarshal([]byte(data), &f); err != nil {
+			t.Fatalf("decode %q: %v", data, err)
+		}
+		if f.Kind == "event" {
+			got = append(got, f.Event.Msg)
+		} else {
+			got = append(got, f.Kind)
+		}
+	}
+	if strings.Join(got, ",") != "snapshot,a,b" {
+		t.Fatalf("frames = %v, want [snapshot a b]", got)
+	}
 }
 
 // A zero timeout means "no limit", which is the slow-loris exposure the

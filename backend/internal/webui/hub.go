@@ -3,7 +3,11 @@
 // touches the TV- or Pro-facing control paths.
 package webui
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/trick77/ship/kit/sse"
+)
 
 // Event is a single human-readable log line surfaced to the UI's live event tail.
 type Event struct {
@@ -21,15 +25,6 @@ type Frame struct {
 	Event    *Event    `json:"event,omitempty"`
 }
 
-// subscriber is one SSE client's frame channel plus the lock that makes a send and a
-// concurrent cancel-close mutually exclusive — so fanout (which runs WITHOUT h.mu held)
-// can never send on a channel that cancel is closing.
-type subscriber struct {
-	ch     chan Frame
-	mu     sync.Mutex
-	closed bool
-}
-
 // Hub holds the latest snapshot and a bounded tail of recent events, and fans
 // both out to SSE subscribers. All methods are safe for concurrent use.
 type Hub struct {
@@ -37,49 +32,45 @@ type Hub struct {
 	ringSize int
 	events   []Event
 	snap     Snapshot
-	subs     map[int]*subscriber
-	nextID   int
+	fan      *sse.Hub[Frame]
 }
+
+// subBuffer is each SSE subscriber's frame queue depth.
+const subBuffer = 32
 
 // NewHub creates a hub whose event ring keeps at most ringSize recent events.
 func NewHub(ringSize int) *Hub {
 	if ringSize < 1 {
 		ringSize = 1
 	}
-	return &Hub{ringSize: ringSize, subs: map[int]*subscriber{}}
+	return &Hub{ringSize: ringSize, fan: sse.NewHub[Frame](sse.HubOptions{Buffer: subBuffer})}
 }
 
 // PublishEvent appends an event to the bounded ring and fans it out to subscribers.
+// An event is an append log: a subscriber whose buffer is full simply misses it.
+//
+// The fan-out runs with h.mu released. The process-wide logger funnels every slog
+// line into PublishEvent, so fanning out while holding h.mu would self-deadlock the
+// moment any code on the send path logged; kit's hub logs nothing under its own lock.
 func (h *Hub) PublishEvent(e Event) {
 	h.mu.Lock()
 	h.events = append(h.events, e)
 	if len(h.events) > h.ringSize {
 		h.events = h.events[len(h.events)-h.ringSize:]
 	}
-	subs := h.subList()
 	h.mu.Unlock()
-	fanout(subs, Frame{Kind: "event", Event: &e})
+	h.fan.Publish(Frame{Kind: "event", Event: &e})
 }
 
-// SetSnapshot stores the latest snapshot and fans it out to subscribers.
+// SetSnapshot stores the latest snapshot and fans it out to subscribers, outside
+// h.mu as in PublishEvent. A snapshot is coalescible state: a full subscriber's
+// oldest queued frame is evicted so the freshest snapshot still lands (a
+// briefly-stalled dashboard would otherwise stay on stale state).
 func (h *Hub) SetSnapshot(s Snapshot) {
 	h.mu.Lock()
 	h.snap = s
-	subs := h.subList()
 	h.mu.Unlock()
-	fanout(subs, Frame{Kind: "snapshot", Snapshot: &s})
-}
-
-// subList copies the current subscribers under h.mu so the actual sends happen with
-// h.mu released. The process-wide logger funnels every slog line into PublishEvent, so
-// fanning out while holding h.mu would self-deadlock the moment any code on the send
-// path logged. Caller holds h.mu.
-func (h *Hub) subList() []*subscriber {
-	subs := make([]*subscriber, 0, len(h.subs))
-	for _, s := range h.subs {
-		subs = append(subs, s)
-	}
-	return subs
+	h.fan.PublishLatest(Frame{Kind: "snapshot", Snapshot: &s})
 }
 
 // Snapshot returns the most recent snapshot (zero value until the first SetSnapshot).
@@ -93,9 +84,7 @@ func (h *Hub) Snapshot() Snapshot {
 // snapshot loop uses this to avoid polling state (and the Hue Bridge Pro) when no
 // browser is watching.
 func (h *Hub) hasSubscribers() bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return len(h.subs) > 0
+	return h.fan.Len() > 0
 }
 
 // Events returns a copy of the buffered events, oldest first.
@@ -107,60 +96,15 @@ func (h *Hub) Events() []Event {
 	return out
 }
 
-// fanout delivers a frame to each subscriber without blocking the hub. The per-sub
-// lock makes each send mutually exclusive with a concurrent cancel-close. A snapshot is
-// coalescible state: if a slow subscriber's buffer is full, the oldest queued frame is
-// dropped to make room so the freshest snapshot still lands (a briefly-stalled
-// dashboard would otherwise stay on stale state). An event is an append log: if the
-// buffer is full it is simply dropped.
-func fanout(subs []*subscriber, f Frame) {
-	for _, s := range subs {
-		s.mu.Lock()
-		if !s.closed {
-			select {
-			case s.ch <- f:
-			default:
-				if f.Snapshot != nil {
-					select {
-					case <-s.ch: // drop the oldest queued frame…
-					default:
-					}
-					select {
-					case s.ch <- f: // …and land the fresh snapshot
-					default:
-					}
-				}
-			}
-		}
-		s.mu.Unlock()
-	}
+// Subscribe registers a subscriber and returns its frame channel plus a cancel
+// func that removes and closes it. ok is false once Close ran (shutdown).
+func (h *Hub) Subscribe() (ch <-chan Frame, cancel func(), ok bool) {
+	return h.fan.Subscribe("")
 }
 
-// Subscribe registers a subscriber and returns its frame channel plus a cancel
-// func that removes and closes it.
-func (h *Hub) Subscribe() (<-chan Frame, func()) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	id := h.nextID
-	h.nextID++
-	sub := &subscriber{ch: make(chan Frame, 32)}
-	h.subs[id] = sub
-	cancel := func() {
-		h.mu.Lock()
-		_, ok := h.subs[id]
-		delete(h.subs, id)
-		h.mu.Unlock()
-		if !ok {
-			return
-		}
-		// Close under the sub's own lock so a concurrent fanout send cannot fire after
-		// the close (it checks s.closed under the same lock).
-		sub.mu.Lock()
-		if !sub.closed {
-			sub.closed = true
-			close(sub.ch)
-		}
-		sub.mu.Unlock()
-	}
-	return sub.ch, cancel
+// Close ends every subscription, so open SSE streams return instead of holding
+// the HTTP server's shutdown drain. Later publishes still fill the ring and the
+// snapshot; they just reach nobody.
+func (h *Hub) Close() {
+	h.fan.Close()
 }
