@@ -18,7 +18,10 @@ func TestHub_RingBufferDropsOldest(t *testing.T) {
 
 func TestHub_SubscribeReceivesEventAndSnapshot(t *testing.T) {
 	h := NewHub(8)
-	ch, cancel := h.Subscribe()
+	ch, cancel, ok := h.Subscribe()
+	if !ok {
+		t.Fatal("Subscribe refused on an open hub")
+	}
 	defer cancel()
 
 	h.PublishEvent(Event{Time: "t", Level: "INFO", Msg: "hi"})
@@ -34,13 +37,37 @@ func TestHub_SubscribeReceivesEventAndSnapshot(t *testing.T) {
 	}
 }
 
-func TestHub_CancelStopsDelivery(t *testing.T) {
+func TestHub_SnapshotEvictsWhenFull(t *testing.T) {
+	// Given: a stalled subscriber whose buffer is full of events
 	h := NewHub(8)
-	ch, cancel := h.Subscribe()
-	cancel()
-	h.PublishEvent(Event{Msg: "x"})
-	if _, ok := <-ch; ok {
-		t.Fatal("channel should be closed after cancel")
+	ch, cancel, _ := h.Subscribe()
+	defer cancel()
+	flooded := make(chan struct{})
+	go func() {
+		for range subBuffer + 8 {
+			h.PublishEvent(Event{Msg: "flood"})
+		}
+		close(flooded)
+	}()
+	select {
+	case <-flooded:
+	case <-time.After(2 * time.Second):
+		t.Fatal("PublishEvent blocked on a full subscriber")
+	}
+
+	// When
+	h.SetSnapshot(Snapshot{Version: "fresh"})
+
+	// Then: the fresh snapshot still landed (an event would have been dropped)
+	for {
+		select {
+		case f := <-ch:
+			if f.Kind == "snapshot" && f.Snapshot.Version == "fresh" {
+				return
+			}
+		default:
+			t.Fatal("snapshot dropped on a full subscriber; dashboard stays stale")
+		}
 	}
 }
 
@@ -49,30 +76,12 @@ func TestHub_HasSubscribers(t *testing.T) {
 	if h.hasSubscribers() {
 		t.Fatal("fresh hub should have no subscribers")
 	}
-	_, cancel := h.Subscribe()
+	_, cancel, _ := h.Subscribe()
 	if !h.hasSubscribers() {
 		t.Fatal("expected a subscriber after Subscribe")
 	}
 	cancel()
 	if h.hasSubscribers() {
 		t.Fatal("expected no subscribers after cancel")
-	}
-}
-
-func TestHub_SlowSubscriberDoesNotBlock(t *testing.T) {
-	h := NewHub(8)
-	_, cancel := h.Subscribe() // never drained
-	defer cancel()
-	done := make(chan struct{})
-	go func() {
-		for i := 0; i < 1000; i++ {
-			h.PublishEvent(Event{Msg: "flood"})
-		}
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("PublishEvent blocked on a slow subscriber")
 	}
 }

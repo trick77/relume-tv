@@ -2,7 +2,7 @@ package webui
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -11,6 +11,7 @@ import (
 
 	"github.com/trick77/ship/kit/httpx"
 	"github.com/trick77/ship/kit/spa"
+	"github.com/trick77/ship/kit/sse"
 
 	"github.com/trick77/relume-tv/web"
 )
@@ -107,26 +108,14 @@ func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		httpx.WriteError(w, http.StatusInternalServerError, "streaming unsupported")
+	st, err := sse.Open(w)
+	if err != nil {
+		if errors.Is(err, sse.ErrNoFlush) {
+			httpx.WriteError(w, http.StatusInternalServerError, "streaming unsupported")
+		}
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-
-	write := func(b []byte) error {
-		if _, err := w.Write(b); err != nil {
-			return err
-		}
-		flusher.Flush()
-		return nil
-	}
-	writeFrame := func(f Frame) error {
-		b, _ := json.Marshal(f)
-		out := append([]byte("data: "), b...)
-		return write(append(out, '\n', '\n'))
-	}
+	defer st.Close()
 
 	// Initial paint: a fresh snapshot, then the buffered event tail. Subscribe AFTER the
 	// tail replay: subscribing first would buffer events published during the replay
@@ -135,38 +124,41 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// inverse gap (an event slipping through the window) is a pre-existing, cosmetic
 	// live-log nicety, not worth a duplicate on every connect.
 	snap := BuildSnapshot(s.src)
-	if writeFrame(Frame{Kind: "snapshot", Snapshot: &snap}) != nil {
+	if st.SendJSON("", Frame{Kind: "snapshot", Snapshot: &snap}) != nil {
 		return
 	}
 	for _, e := range s.hub.Events() {
-		e := e
-		if writeFrame(Frame{Kind: "event", Event: &e}) != nil {
+		if st.SendJSON("", Frame{Kind: "event", Event: &e}) != nil {
 			return
 		}
 	}
 
-	ch, cancel := s.hub.Subscribe()
+	// ok is false only once the hub is closed for shutdown: the stream just ends.
+	ch, cancel, ok := s.hub.Subscribe()
+	if !ok {
+		return
+	}
 	defer cancel()
 
-	// A periodic heartbeat (an SSE comment) keeps intermediaries from idle-closing the
-	// stream AND surfaces a dead client: a write to a vanished peer eventually errors, so
-	// the handler returns, cancel() runs, and the snapshot loop stops polling the
-	// queue-sensitive Pro for an audience that is no longer there.
-	heartbeat := time.NewTicker(15 * time.Second)
-	defer heartbeat.Stop()
+	// A keepalive comment after 15s of silence keeps intermediaries from idle-closing
+	// the stream AND surfaces a dead client: a write to a vanished peer eventually
+	// errors and closes st.Done(), so the handler returns, cancel() runs, and the
+	// snapshot loop stops polling the queue-sensitive Pro for an audience that is no
+	// longer there.
+	st.Heartbeat(15 * time.Second)
 	for {
 		select {
 		case <-r.Context().Done():
 			return
-		case <-heartbeat.C:
-			if write([]byte(": ping\n\n")) != nil {
-				return
-			}
+		case <-st.Done():
+			return
 		case f, ok := <-ch:
-			if !ok {
+			// After shutdown cancels the request context, stop instead of draining
+			// up to 32 queued frames to a client that may be stalled.
+			if !ok || r.Context().Err() != nil {
 				return
 			}
-			if writeFrame(f) != nil {
+			if st.SendJSON("", f) != nil {
 				return
 			}
 		}
@@ -178,13 +170,15 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // truncate the long-lived /api/events SSE stream. It is split out so the timeouts
 // are assertable.
 //
-// Request contexts derive from a context cancelled when shutdown begins, so open
-// SSE streams return at once instead of holding the drain until its timeout.
+// Shutdown closes the hub, ending every subscribed SSE stream, and cancels the
+// context request contexts derive from, so a stream still in its initial paint or
+// draining queued frames returns too instead of holding the drain until its timeout.
 func (s *Server) newHTTPServer() *http.Server {
 	srv := httpx.NewServer(s.addr, s.Handler())
 	reqCtx, cancel := context.WithCancel(context.Background())
 	srv.BaseContext = func(net.Listener) context.Context { return reqCtx }
 	srv.RegisterOnShutdown(cancel)
+	srv.RegisterOnShutdown(s.hub.Close)
 	return srv
 }
 
