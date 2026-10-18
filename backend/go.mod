@@ -3,9 +3,9 @@ module github.com/trick77/relume-tv
 go 1.27.2
 
 require (
-	github.com/hashicorp/mdns v1.0.6
+	github.com/hashicorp/mdns v1.0.7
 	github.com/miekg/dns v1.1.73
-	github.com/pion/dtls/v3 v3.1.10
+	github.com/pion/dtls/v3 v3.1.12
 	github.com/trick77/ship/kit v0.17.1
 )
 
