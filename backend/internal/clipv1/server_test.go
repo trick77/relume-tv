@@ -1628,21 +1628,24 @@ func TestLights_debugModeServesListAndSingleLight(t *testing.T) {
 	s.SetLightProvider(fakeLightProvider{lights: map[string]any{
 		"1": map[string]any{"name": "Lamp", "type": "Extended color light"},
 	}})
-	resp := mustPostUA(t, ts.URL+"/api", `{"devicetype":"Philips_TV#Ambilight","generateclientkey":true}`, tvUserAgent)
-	defer resp.Body.Close()
-	var paired []map[string]map[string]string
-	json.NewDecoder(resp.Body).Decode(&paired)
-	username := paired[0]["success"]["username"]
+	username := pairTV(t, ts)
+	if username == "" {
+		t.Fatal("pairing returned no username")
+	}
 
 	// When
 	listResp := mustGet(t, ts.URL+"/api/"+username+"/lights")
 	defer listResp.Body.Close()
 	var lights map[string]any
-	json.NewDecoder(listResp.Body).Decode(&lights)
+	if err := json.NewDecoder(listResp.Body).Decode(&lights); err != nil {
+		t.Fatalf("decode lights: %v", err)
+	}
 	oneResp := mustGet(t, ts.URL+"/api/"+username+"/lights/1")
 	defer oneResp.Body.Close()
 	var light map[string]any
-	json.NewDecoder(oneResp.Body).Decode(&light)
+	if err := json.NewDecoder(oneResp.Body).Decode(&light); err != nil {
+		t.Fatalf("decode light 1: %v", err)
+	}
 
 	// Then
 	if listResp.StatusCode != http.StatusOK || len(lights) != 1 {
