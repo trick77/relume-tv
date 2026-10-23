@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1653,5 +1654,65 @@ func TestLights_debugModeServesListAndSingleLight(t *testing.T) {
 	}
 	if oneResp.StatusCode != http.StatusOK || light["name"] != "Lamp" {
 		t.Fatalf("light 1 = %d %v, want 200 Lamp", oneResp.StatusCode, light)
+	}
+}
+
+func TestPairing_saveFailureAnswersCLIPError(t *testing.T) {
+	// Given: a committed config in a directory that no longer accepts new files,
+	// so persisting the paired user fails
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	cfg, err := config.Load(filepath.Join(dir, "c.json"))
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	if err := cfg.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	var buf strings.Builder
+	s := New(cfg, "10.0.0.5", 80, slog.New(slog.NewTextHandler(&buf, nil)))
+
+	// When
+	req := httptest.NewRequest(http.MethodPost, "/api", strings.NewReader(`{"devicetype":"Philips_TV#Ambilight"}`))
+	req.Header.Set("User-Agent", tvUserAgent)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	// Then: the TV gets the CLIP v1 error body, the cause stays in the log
+	var out []map[string]map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out) != 1 || out[0]["error"] == nil || out[0]["error"]["type"] != float64(901) {
+		t.Fatalf("body = %v, want one CLIP error of type 901", out)
+	}
+	if strings.Contains(fmt.Sprint(out), "permission") {
+		t.Fatalf("body leaks the cause: %v", out)
+	}
+	if log := buf.String(); !strings.Contains(log, "saving paired user") || !strings.Contains(log, "permission denied") {
+		t.Fatalf("log = %q, want the save failure with its cause", log)
+	}
+}
+
+func TestLogRequests_debugTxReports200WithoutWriteHeader(t *testing.T) {
+	// Given: debug logging on and a handler that writes nothing
+	s, _ := newTestServer(t)
+	s.Debug = true
+	var buf strings.Builder
+	s.log = slog.New(slog.NewTextHandler(&buf, nil))
+	h := s.logRequests(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+
+	// When
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/x/config", nil))
+
+	// Then: net/http answers 200 for such a handler, so the log says 200
+	if log := buf.String(); !strings.Contains(log, "http tx") || !strings.Contains(log, "status=200") {
+		t.Fatalf("log = %q, want an http tx line with status=200", log)
 	}
 }
