@@ -24,6 +24,7 @@ import (
 	"github.com/trick77/relume-tv/internal/config"
 	"github.com/trick77/relume-tv/internal/netutil"
 	"github.com/trick77/relume-tv/internal/upnp"
+	"github.com/trick77/ship/kit/httpx"
 )
 
 // LightProvider supplies the (already v1-translated) light list of the Hue Bridge Pro
@@ -328,7 +329,7 @@ func (s *Server) handleUnknownAPI(w http.ResponseWriter, r *http.Request) {
 // (e.g. the devicetype string during pairing).
 func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		rec := httpx.NewStatusWriter(w)
 		if s.Debug {
 			var body []byte
 			if r.Body != nil {
@@ -366,7 +367,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 		// the debug branch above still logs every request including its User-Agent.
 		next.ServeHTTP(rec, r)
 		if s.Debug {
-			s.log.Info("http tx", "method", r.Method, "requestURI", r.URL.RequestURI(), "status", rec.status, "bytes", rec.bytes)
+			s.log.Info("http tx", "method", r.Method, "requestURI", r.URL.RequestURI(), "status", rec.Status())
 		}
 	})
 }
@@ -538,23 +539,6 @@ type drainStatsProvider interface {
 // round1 rounds to one decimal for readable Hz figures in the activity log.
 func round1(v float64) float64 { return math.Round(v*10) / 10 }
 
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-	bytes  int
-}
-
-func (r *statusRecorder) WriteHeader(status int) {
-	r.status = status
-	r.ResponseWriter.WriteHeader(status)
-}
-
-func (r *statusRecorder) Write(p []byte) (int, error) {
-	n, err := r.ResponseWriter.Write(p)
-	r.bytes += n
-	return n, err
-}
-
 // isTVRequest identifies the Ambilight TV so pairing can be auto-accepted only
 // for it (never an arbitrary LAN device): by source IP (when -tv-ip is set) or by
 // the Android/Dalvik TV User-Agent it uses for CLIP v1 pairing. Some Philips
@@ -588,7 +572,7 @@ func (s *Server) handleDescription(w http.ResponseWriter, r *http.Request) {
 	}
 	xml, err := upnp.Render(s.cfg.Identity, s.advIP, s.httpPort)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		httpx.ServerError(w, r, err, "internal server error")
 		return
 	}
 	// Real Hue bridges and the confirmed-working ha-hue-entertainment emulator
@@ -627,7 +611,7 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 		if existing.ClientKey != "" {
 			success["clientkey"] = existing.ClientKey
 		}
-		writeJSON(w, []map[string]any{{"success": success}})
+		httpx.WriteJSON(w, http.StatusOK, []map[string]any{{"success": success}})
 		return
 	}
 
@@ -638,7 +622,7 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 
 	username, err := randomHex(16) // 32 characters
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		httpx.ServerError(w, r, err, "internal server error")
 		return
 	}
 	user := &config.APIUser{Username: username, DeviceType: req.DeviceType}
@@ -647,7 +631,7 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 	if req.GenerateClientKey {
 		ck, cerr := randomHex(16)
 		if cerr != nil {
-			http.Error(w, cerr.Error(), http.StatusInternalServerError)
+			httpx.ServerError(w, r, cerr, "internal server error")
 			return
 		}
 		ck = strings.ToUpper(ck)
@@ -655,12 +639,12 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 		success["clientkey"] = ck
 	}
 	if err := s.cfg.AddAPIUser(user); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		httpx.ServerError(w, r, err, "internal server error")
 		return
 	}
 	s.log.Info("tv paired", "username", username, "entertainment", req.GenerateClientKey)
 
-	writeJSON(w, []map[string]any{{"success": success}})
+	httpx.WriteJSON(w, http.StatusOK, []map[string]any{{"success": success}})
 	if s.OnPair != nil {
 		s.OnPair()
 	}
@@ -678,14 +662,14 @@ func bridgeIDSuffix(bridgeID string) string {
 
 // handleShortConfig returns the unauthenticated short config (identity check).
 func (s *Server) handleShortConfig(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, s.shortConfig())
+	httpx.WriteJSON(w, http.StatusOK, s.shortConfig())
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(w, r) {
 		return
 	}
-	writeJSON(w, s.fullConfig())
+	httpx.WriteJSON(w, http.StatusOK, s.fullConfig())
 }
 
 // fullConfig is the authenticated /api/{user}/config: the short config plus the
@@ -787,7 +771,7 @@ func (s *Server) handleDatastore(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(w, r) {
 		return
 	}
-	writeJSON(w, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"lights":        s.lightsV1(),
 		"groups":        s.groupsV1(),
 		"config":        s.shortConfig(),
@@ -805,7 +789,7 @@ func (s *Server) handleLights(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(w, r) {
 		return
 	}
-	writeJSON(w, s.lightsV1())
+	httpx.WriteJSON(w, http.StatusOK, s.lightsV1())
 }
 
 func (s *Server) handleLight(w http.ResponseWriter, r *http.Request) {
@@ -829,7 +813,7 @@ func (s *Server) handleLight(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 3, "/lights/"+id, "resource, /lights/"+id+", not available")
 		return
 	}
-	writeJSON(w, light)
+	httpx.WriteJSON(w, http.StatusOK, light)
 }
 
 // handleSetLightState handles the REST control path: accept v1 state, translate
@@ -862,7 +846,7 @@ func (s *Server) handleSetLightState(w http.ResponseWriter, r *http.Request) {
 	// 4464, a different and possibly allowed light, so it must never reach
 	// the write path.
 	if n, err := strconv.Atoi(id); err == nil && (n < 0 || n > math.MaxUint16 || !s.AllowsMember(uint16(n))) {
-		writeJSON(w, lightStateSuccess(id, state))
+		httpx.WriteJSON(w, http.StatusOK, lightStateSuccess(id, state))
 		return
 	}
 	s.recordWriteTime()
@@ -880,7 +864,7 @@ func (s *Server) handleSetLightState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 901, "/lights/"+id+"/state", "hue bridge pro error")
 		return
 	}
-	writeJSON(w, lightStateSuccess(id, state))
+	httpx.WriteJSON(w, http.StatusOK, lightStateSuccess(id, state))
 }
 
 // lightStateSuccess builds the v1 light-state success body: one success entry per
@@ -899,7 +883,7 @@ func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(w, r) {
 		return
 	}
-	writeJSON(w, s.groupsV1())
+	httpx.WriteJSON(w, http.StatusOK, s.groupsV1())
 }
 
 // groupsV1 is the v1 groups map: group 0 (every light) and the TV's entertainment
@@ -1047,7 +1031,7 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 3, "/groups/"+id, "resource, /groups/"+id+", not available")
 		return
 	}
-	writeJSON(w, s.bridgeGroup(id, s.cachedLightsV1()))
+	httpx.WriteJSON(w, http.StatusOK, s.bridgeGroup(id, s.cachedLightsV1()))
 }
 
 func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
@@ -1077,7 +1061,7 @@ func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 			s.log.Info("entertainment group membership: TV requested light subset", "lights", ids)
 		}
 	}
-	writeJSON(w, []map[string]any{{"success": map[string]any{"id": "1"}}})
+	httpx.WriteJSON(w, http.StatusOK, []map[string]any{{"success": map[string]any{"id": "1"}}})
 }
 
 // handleGroupAction is the groups REST path (PUT /api/{user}/groups/{id}/action).
@@ -1129,7 +1113,7 @@ func (s *Server) handleGroupAction(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.log.Info("group action forwarded", "group", id, "lights", forwarded, "body", string(body))
 	}
-	writeJSON(w, []map[string]any{{"success": map[string]any{"/groups/" + id + "/action": "ok"}}})
+	httpx.WriteJSON(w, http.StatusOK, []map[string]any{{"success": map[string]any{"/groups/" + id + "/action": "ok"}}})
 }
 
 // handleGroupUpdate intercepts, among other things, the stream activation
@@ -1186,13 +1170,13 @@ func (s *Server) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
 			} else {
 				s.stream.disarmWatchdog()
 			}
-			writeJSON(w, []map[string]any{{"success": map[string]any{
+			httpx.WriteJSON(w, http.StatusOK, []map[string]any{{"success": map[string]any{
 				"/groups/" + id + "/stream/active": active,
 			}}})
 			return
 		}
 	}
-	writeJSON(w, []map[string]any{{"success": map[string]any{"/groups/" + id: "ok"}}})
+	httpx.WriteJSON(w, http.StatusOK, []map[string]any{{"success": map[string]any{"/groups/" + id: "ok"}}})
 }
 
 // streamActiveFromBody extracts stream.active from a group-update body. The bool
@@ -1214,7 +1198,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(w, r) {
 		return
 	}
-	writeJSON(w, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"lights":        map[string]any{"available": 60, "total": 63},
 		"sensors":       map[string]any{"available": 240, "total": 250},
 		"groups":        map[string]any{"available": 60, "total": 64},
@@ -1231,7 +1215,7 @@ func (s *Server) handleEmptyCollection(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(w, r) {
 		return
 	}
-	writeJSON(w, map[string]any{})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{})
 }
 
 // authorized checks whether the {user} from the path is a paired client.
@@ -1250,11 +1234,6 @@ func randomHex(n int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
-}
-
-func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
 }
 
 // writeError writes a CLIP-v1 error in the standard format.

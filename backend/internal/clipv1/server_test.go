@@ -1620,3 +1620,35 @@ func TestLastActivity_doesNotAdvanceOnOutOfRangeWrite(t *testing.T) {
 		t.Fatal("LastActivity did not advance on an in-zone write; the guard rejects too much")
 	}
 }
+
+func TestLights_debugModeServesListAndSingleLight(t *testing.T) {
+	// Given: debug logging on and a provider with one light
+	s, ts := newTestServer(t)
+	s.Debug = true
+	s.SetLightProvider(fakeLightProvider{lights: map[string]any{
+		"1": map[string]any{"name": "Lamp", "type": "Extended color light"},
+	}})
+	resp := mustPostUA(t, ts.URL+"/api", `{"devicetype":"Philips_TV#Ambilight","generateclientkey":true}`, tvUserAgent)
+	defer resp.Body.Close()
+	var paired []map[string]map[string]string
+	json.NewDecoder(resp.Body).Decode(&paired)
+	username := paired[0]["success"]["username"]
+
+	// When
+	listResp := mustGet(t, ts.URL+"/api/"+username+"/lights")
+	defer listResp.Body.Close()
+	var lights map[string]any
+	json.NewDecoder(listResp.Body).Decode(&lights)
+	oneResp := mustGet(t, ts.URL+"/api/"+username+"/lights/1")
+	defer oneResp.Body.Close()
+	var light map[string]any
+	json.NewDecoder(oneResp.Body).Decode(&light)
+
+	// Then
+	if listResp.StatusCode != http.StatusOK || len(lights) != 1 {
+		t.Fatalf("lights = %d %v, want 200 with one light", listResp.StatusCode, lights)
+	}
+	if oneResp.StatusCode != http.StatusOK || light["name"] != "Lamp" {
+		t.Fatalf("light 1 = %d %v, want 200 Lamp", oneResp.StatusCode, light)
+	}
+}
