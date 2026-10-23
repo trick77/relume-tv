@@ -625,23 +625,12 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 	// POST /api in a tight loop until it succeeds (it polls for ~30s), which is pure
 	// request spam for no benefit.
 
-	username, err := randomHex(16) // 32 characters
-	if err != nil {
-		s.log.ErrorContext(r.Context(), "generating username", "err", err)
-		writeError(w, 901, "/", "internal error")
-		return
-	}
+	username := randomHex(16) // 32 characters
 	user := &config.APIUser{Username: username, DeviceType: req.DeviceType}
 
 	success := map[string]string{"username": username}
 	if req.GenerateClientKey {
-		ck, cerr := randomHex(16)
-		if cerr != nil {
-			s.log.ErrorContext(r.Context(), "generating clientkey", "err", cerr)
-			writeError(w, 901, "/", "internal error")
-			return
-		}
-		ck = strings.ToUpper(ck)
+		ck := strings.ToUpper(randomHex(16))
 		user.ClientKey = ck
 		success["clientkey"] = ck
 	}
@@ -1236,12 +1225,12 @@ func (s *Server) authorized(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func randomHex(n int) (string, error) {
+// randomHex returns n random bytes hex-encoded. crypto/rand.Read never fails
+// (it crashes the program instead), so there is no error to return.
+func randomHex(n int) string {
 	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
