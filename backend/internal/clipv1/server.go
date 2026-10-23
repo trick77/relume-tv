@@ -24,6 +24,7 @@ import (
 	"github.com/trick77/relume-tv/internal/config"
 	"github.com/trick77/relume-tv/internal/netutil"
 	"github.com/trick77/relume-tv/internal/upnp"
+	"github.com/trick77/ship/kit/httpx"
 )
 
 // LightProvider supplies the (already v1-translated) light list of the Hue Bridge Pro
@@ -328,7 +329,7 @@ func (s *Server) handleUnknownAPI(w http.ResponseWriter, r *http.Request) {
 // (e.g. the devicetype string during pairing).
 func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		rec := httpx.NewStatusWriter(w)
 		if s.Debug {
 			var body []byte
 			if r.Body != nil {
@@ -366,7 +367,11 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 		// the debug branch above still logs every request including its User-Agent.
 		next.ServeHTTP(rec, r)
 		if s.Debug {
-			s.log.Info("http tx", "method", r.Method, "requestURI", r.URL.RequestURI(), "status", rec.status, "bytes", rec.bytes)
+			status := rec.Status()
+			if status == 0 {
+				status = http.StatusOK
+			}
+			s.log.Info("http tx", "method", r.Method, "requestURI", r.URL.RequestURI(), "status", status)
 		}
 	})
 }
@@ -538,23 +543,6 @@ type drainStatsProvider interface {
 // round1 rounds to one decimal for readable Hz figures in the activity log.
 func round1(v float64) float64 { return math.Round(v*10) / 10 }
 
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-	bytes  int
-}
-
-func (r *statusRecorder) WriteHeader(status int) {
-	r.status = status
-	r.ResponseWriter.WriteHeader(status)
-}
-
-func (r *statusRecorder) Write(p []byte) (int, error) {
-	n, err := r.ResponseWriter.Write(p)
-	r.bytes += n
-	return n, err
-}
-
 // isTVRequest identifies the Ambilight TV so pairing can be auto-accepted only
 // for it (never an arbitrary LAN device): by source IP (when -tv-ip is set) or by
 // the Android/Dalvik TV User-Agent it uses for CLIP v1 pairing. Some Philips
@@ -588,7 +576,8 @@ func (s *Server) handleDescription(w http.ResponseWriter, r *http.Request) {
 	}
 	xml, err := upnp.Render(s.cfg.Identity, s.advIP, s.httpPort)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.log.ErrorContext(r.Context(), "rendering description.xml", "err", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	// Real Hue bridges and the confirmed-working ha-hue-entertainment emulator
@@ -636,26 +625,18 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 	// POST /api in a tight loop until it succeeds (it polls for ~30s), which is pure
 	// request spam for no benefit.
 
-	username, err := randomHex(16) // 32 characters
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	username := randomHex(16) // 32 characters
 	user := &config.APIUser{Username: username, DeviceType: req.DeviceType}
 
 	success := map[string]string{"username": username}
 	if req.GenerateClientKey {
-		ck, cerr := randomHex(16)
-		if cerr != nil {
-			http.Error(w, cerr.Error(), http.StatusInternalServerError)
-			return
-		}
-		ck = strings.ToUpper(ck)
+		ck := strings.ToUpper(randomHex(16))
 		user.ClientKey = ck
 		success["clientkey"] = ck
 	}
 	if err := s.cfg.AddAPIUser(user); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.log.ErrorContext(r.Context(), "saving paired user", "err", err)
+		writeError(w, 901, "/", "internal error")
 		return
 	}
 	s.log.Info("tv paired", "username", username, "entertainment", req.GenerateClientKey)
@@ -1244,12 +1225,12 @@ func (s *Server) authorized(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func randomHex(n int) (string, error) {
+// randomHex returns n random bytes hex-encoded. crypto/rand.Read never fails
+// (it crashes the program instead), so there is no error to return.
+func randomHex(n int) string {
 	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

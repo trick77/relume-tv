@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1618,5 +1619,100 @@ func TestLastActivity_doesNotAdvanceOnOutOfRangeWrite(t *testing.T) {
 	mustPut(t, ts.URL+"/api/"+user+"/lights/4464/state", `{"on":true,"bri":254}`).Body.Close()
 	if s.LastActivity().IsZero() {
 		t.Fatal("LastActivity did not advance on an in-zone write; the guard rejects too much")
+	}
+}
+
+func TestLights_debugModeServesListAndSingleLight(t *testing.T) {
+	// Given: debug logging on and a provider with one light
+	s, ts := newTestServer(t)
+	s.Debug = true
+	s.SetLightProvider(fakeLightProvider{lights: map[string]any{
+		"1": map[string]any{"name": "Lamp", "type": "Extended color light"},
+	}})
+	username := pairTV(t, ts)
+	if username == "" {
+		t.Fatal("pairing returned no username")
+	}
+
+	// When
+	listResp := mustGet(t, ts.URL+"/api/"+username+"/lights")
+	defer listResp.Body.Close()
+	var lights map[string]any
+	if err := json.NewDecoder(listResp.Body).Decode(&lights); err != nil {
+		t.Fatalf("decode lights: %v", err)
+	}
+	oneResp := mustGet(t, ts.URL+"/api/"+username+"/lights/1")
+	defer oneResp.Body.Close()
+	var light map[string]any
+	if err := json.NewDecoder(oneResp.Body).Decode(&light); err != nil {
+		t.Fatalf("decode light 1: %v", err)
+	}
+
+	// Then
+	if listResp.StatusCode != http.StatusOK || len(lights) != 1 {
+		t.Fatalf("lights = %d %v, want 200 with one light", listResp.StatusCode, lights)
+	}
+	if oneResp.StatusCode != http.StatusOK || light["name"] != "Lamp" {
+		t.Fatalf("light 1 = %d %v, want 200 Lamp", oneResp.StatusCode, light)
+	}
+}
+
+func TestPairing_saveFailureAnswersCLIPError(t *testing.T) {
+	// Given: a committed config in a directory that no longer accepts new files,
+	// so persisting the paired user fails
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	cfg, err := config.Load(filepath.Join(dir, "c.json"))
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	if err := cfg.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	var buf strings.Builder
+	s := New(cfg, "10.0.0.5", 80, slog.New(slog.NewTextHandler(&buf, nil)))
+
+	// When
+	req := httptest.NewRequest(http.MethodPost, "/api", strings.NewReader(`{"devicetype":"Philips_TV#Ambilight"}`))
+	req.Header.Set("User-Agent", tvUserAgent)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	// Then: the TV gets the CLIP v1 error body, the cause stays in the log
+	var out []map[string]map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out) != 1 || out[0]["error"] == nil || out[0]["error"]["type"] != float64(901) {
+		t.Fatalf("body = %v, want one CLIP error of type 901", out)
+	}
+	if strings.Contains(fmt.Sprint(out), "permission") {
+		t.Fatalf("body leaks the cause: %v", out)
+	}
+	if log := buf.String(); !strings.Contains(log, "saving paired user") || !strings.Contains(log, "permission denied") {
+		t.Fatalf("log = %q, want the save failure with its cause", log)
+	}
+}
+
+func TestLogRequests_debugTxReports200WithoutWriteHeader(t *testing.T) {
+	// Given: debug logging on and a handler that writes nothing
+	s, _ := newTestServer(t)
+	s.Debug = true
+	var buf strings.Builder
+	s.log = slog.New(slog.NewTextHandler(&buf, nil))
+	h := s.logRequests(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+
+	// When
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/x/config", nil))
+
+	// Then: net/http answers 200 for such a handler, so the log says 200
+	if log := buf.String(); !strings.Contains(log, "http tx") || !strings.Contains(log, "status=200") {
+		t.Fatalf("log = %q, want an http tx line with status=200", log)
 	}
 }
