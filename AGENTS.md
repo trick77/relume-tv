@@ -58,6 +58,7 @@ All repo content is English.
 - Gate: `ship check` ([ship](https://github.com/trick77/ship), `ship.yaml`; `ship` is the `ship()` from ship's README). `ship hooks` once per clone: pre-push runs it. CI on every pull request (by hand: `gh workflow run CI --ref <branch>`); release by hand only: `gh workflow run Release -f
   bump=patch` (plain tag, amd64+arm64 image to ghcr.io).
 - Commit subjects + PR titles: Go style `area: what` (`setup: …`, `clipv1: …`), gated by ship; release notes list them by area.
+- Fresh clone: `ship hooks` before the first push (check, conform and init install it too); without the pre-push hook a push skips the gate.
 - Keep x/net, x/sys, x/crypto upgraded: go 1.26 with an old x/net failed to link (`syscall.recvmsg`).
 
 ## status
