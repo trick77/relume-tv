@@ -11,7 +11,7 @@ require (
 
 require (
 	github.com/pion/logging v0.2.4 // indirect
-	github.com/pion/transport/v5 v5.1.4 // indirect
+	github.com/pion/transport/v5 v5.1.5 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
